@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Managed Services Ticket Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{--bg:#eef1f4;--surface:#fff;--ink:#14202b;--mute:#5b6b7a;--line:#d6dde4;--accent:#3b4ba8;--p1:#c2362e;--p2:#d98a1c;--p3:#2f7d6b;--bar:#9aa7d6}
+@media (prefers-color-scheme:dark){:root{--bg:#0f161d;--surface:#18222c;--ink:#e8eef4;--mute:#8fa1b1;--line:#2b3946;--accent:#8c9bf0;--p1:#ef6a62;--p2:#f0b04c;--p3:#5cc2a9;--bar:#41508f}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{font-family:"IBM Plex Sans",system-ui,sans-serif;background:var(--bg);color:var(--ink);line-height:1.5;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:center;justify-content:space-between;padding:20px clamp(16px,4vw,40px)}
+h1{font-size:1.35rem;margin:0;font-weight:600}
+h2{font-size:.95rem;margin:0 0 12px;font-weight:600}
+.sub{color:var(--mute);font-size:.85rem;margin:2px 0 0}
+.actions{display:flex;flex-wrap:wrap;gap:8px}
+button,.btn{font:inherit;font-size:.88rem;border:1px solid var(--line);background:var(--surface);color:var(--ink);padding:8px 14px;border-radius:6px;cursor:pointer}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button:focus-visible,.btn:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+main{padding:0 clamp(16px,4vw,40px) 40px;max-width:1280px;margin:0 auto}
+#drop{border:2px dashed var(--line);border-radius:10px;padding:40px 20px;text-align:center;color:var(--mute);background:var(--surface)}
+#drop.over{border-color:var(--accent)}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-bottom:16px}
+.tile{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px}
+.tile.wide{grid-column:1/-1}
+.kpi{display:flex;flex-wrap:wrap;gap:24px;margin-bottom:16px}
+.kpi div{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 18px;min-width:130px}
+.kpi b{display:block;font-size:1.6rem;font-weight:600}
+.kpi span{color:var(--mute);font-size:.8rem}
+.row{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:0;background:none;padding:6px 4px;border-radius:6px}
+.row:hover,.row.sel{background:var(--bg)}
+.row .n{flex:0 0 140px;font-size:.88rem}
+.row .b{flex:1;height:10px;background:var(--bg);border-radius:5px;overflow:hidden}
+.row .b i{display:block;height:100%;background:var(--bar);border-radius:5px}
+.row .c{flex:0 0 44px;text-align:right;font-weight:600;font-size:.9rem}
+.row.peak .b i{background:var(--accent)}
+.pri{display:flex;gap:12px}
+.pri button{flex:1;padding:16px 8px;text-align:center;border-radius:8px}
+.pri b{display:block;font-size:1.9rem;line-height:1.1}
+.pri span{font-size:.8rem;color:var(--mute)}
+.pri .p1 b{color:var(--p1)}.pri .p2 b{color:var(--p2)}.pri .p3 b{color:var(--p3)}
+.pri button.sel,.split button.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.split{display:flex;gap:12px}
+.split button{flex:1;padding:16px 8px;text-align:center;border-radius:8px}
+.split b{display:block;font-size:1.9rem;line-height:1.1}
+.split span{font-size:.8rem;color:var(--mute)}
+.note{color:var(--mute);font-size:.8rem;margin:10px 0 0}
+.tbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:10px}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.84rem}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mute);font-weight:500;white-space:nowrap}
+.tag{display:inline-block;padding:1px 8px;border-radius:10px;background:var(--bg);font-size:.75rem;margin:0 4px 2px 0}
+.hidden{display:none}
+@media (max-width:520px){.row .n{flex-basis:104px}}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Managed Services Ticket Dashboard</h1>
+    <p class="sub" id="status">Load a ServiceNow export to begin. Files stay in your browser.</p>
+  </div>
+  <div class="actions">
+    <label class="btn primary" for="file">Upload tickets</label>
+    <input id="file" type="file" accept=".csv,.xlsx,.xls" class="hidden">
+    <button id="demo">Load sample data</button>
+    <button id="exp" class="hidden">Export filtered CSV</button>
+  </div>
+</header>
+<main>
+  <div id="drop">Drop a ServiceNow .csv or .xlsx export here, or use Upload tickets.<br>Needed columns: Priority, Opened (date), Short description. Optional: Description, Category, Number.</div>
+  <div id="app" class="hidden">
+    <div class="kpi" id="kpi"></div>
+    <div class="grid">
+      <section class="tile wide"><h2>Tickets by area of work and issue type</h2><div id="mods" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));column-gap:24px"></div>
+        <p class="note">Issue types (Slowness, Access) can overlap with an area of work, so area-of-work and issue totals will not add up to the same number.</p></section>
+      <section class="tile"><h2>Tickets by priority</h2><div class="pri" id="pri"></div></section>
+      <section class="tile"><h2>Weekdays vs weekends</h2><div class="split" id="split"></div></section>
+      <section class="tile wide"><h2>Tickets by day of the week</h2><div id="days"></div></section>
+    </div>
+    <section class="tile">
+      <div class="tbar"><h2 id="tt" style="margin:0">Tickets</h2><button id="clear" class="hidden">Clear filter</button></div>
+      <div class="wrap"><table><thead><tr><th>Number</th><th>Opened</th><th>Priority</th><th>Categories</th><th>Short description</th></tr></thead><tbody id="tb"></tbody></table></div>
+      <p class="note" id="more"></p>
+    </section>
+  </div>
+</main>
+<script>
+/* ---- EDIT HERE: keyword rules that decide a ticket's area of work. First match wins. ---- */
+const MODULES = [
+  ["Sales", /\b(sales|sales order|quotation|quote|customer order|invoice request|so\b)/i],
+  ["Purchase / Production", /\b(purchase|po\b|procure|vendor|production|manufactur|bom|work order|prod order|supplier)/i],
+  ["UAT", /\b(uat|user acceptance|test case|test env|testing)/i],
+  ["POS", /\b(pos\b|point of sale|till|store register|retail terminal)/i],
+  ["General Ledger", /\b(general ledger|gl\b|journal|ledger|trial balance|chart of accounts|posting)/i],
+  ["Accounts Receivable", /\b(receivable|a\/r|\bar\b|customer payment|collections|credit note)/i],
+  ["Accounts Payable", /\b(payable|a\/p|\bap\b|vendor payment|vendor invoice|payment run)/i],
+  ["Product Information Mgmt", /\b(pim\b|product information|item master|product master|sku|item attribute|product catalog)/i],
+  ["Warehouse Management", /\b(warehouse|wms|inventory|stock|picking|putaway|bin\b|goods receipt|grn|dispatch)/i],
+  ["Human Resources", /\b(hr\b|human resource|payroll|leave|employee|attendance|timesheet|salary)/i]
+];
+const ISSUES = [
+  ["Slowness", /\b(slow|slowness|latency|lag|laggy|performance|hang|hanging|timeout|time out|taking long|delay)/i],
+  ["Access", /\b(access|permission|privilege|role\b|login|log in|sign in|password|locked|authori[sz]|unauthori[sz]|credential|mfa|forbidden|denied)/i]
+];
+const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+/* ----------------------------------------------------------------------------------- */
+const $ = id => document.getElementById(id);
+let rows = [], filter = null;
+
+const HEAD = {
+  number: /^(number|ticket|incident|id)/i, opened: /(opened|created|open date|sys_created)/i,
+  priority: /priority/i, short: /(short.?desc|summary|title)/i,
+  desc: /^(description|details?)$/i, cat: /^(category|subcategory|module|u_module|service)/i
+};
+function pick(headers, re){ return headers.find(h => re.test(String(h).trim())); }
+
+function parseDate(v){
+  if (v instanceof Date) return v;
+  if (typeof v === "number") return new Date(Math.round((v - 25569) * 86400000));
+  const s = String(v||"").trim(); if (!s) return null;
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2}))?/);
+  if (m) return new Date(+m[1], m[2]-1, +m[3], +(m[4]||0), +(m[5]||0));
+  m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})(?:\s+(\d{1,2}):(\d{2}))?/); /* dd/mm/yyyy (India) */
+  if (m) return new Date(+m[3], m[2]-1, +m[1], +(m[4]||0), +(m[5]||0));
+  const d = new Date(s); return isNaN(d) ? null : d;
+}
+function csvParse(text){
+  const out=[]; let row=[], cur="", q=false;
+  for (let i=0;i<text.length;i++){
+    const c=text[i];
+    if (q){ if(c==='"'){ if(text[i+1]==='"'){cur+='"';i++} else q=false } else cur+=c }
+    else if (c==='"') q=true;
+    else if (c===","){ row.push(cur); cur="" }
+    else if (c==="\n"||c==="\r"){ if(c==="\r"&&text[i+1]==="\n")i++; row.push(cur); out.push(row); row=[]; cur="" }
+    else cur+=c;
+  }
+  if (cur||row.length){ row.push(cur); out.push(row) }
+  const h = out.shift().map(x=>x.replace(/^\uFEFF/,"").trim());
+  return out.filter(r=>r.some(x=>x.trim())).map(r=>Object.fromEntries(h.map((k,i)=>[k,r[i]||""])));
+}
+function build(raw){
+  if (!raw.length) return fail("No rows found in that file.");
+  const H = Object.keys(raw[0]), c = {};
+  for (const k in HEAD) c[k] = pick(H, HEAD[k]);
+  const missing = ["opened","priority","short"].filter(k=>!c[k]);
+  if (missing.length) return fail("Could not find column(s): " + missing.join(", ") + ". Found: " + H.join(", "));
+  rows = raw.map((r,i)=>{
+    const d = parseDate(r[c.opened]); if (!d) return null;
+    const pm = String(r[c.priority]).match(/[1-9]/), pn = pm ? +pm[0] : 0;
+    const text = [r[c.short], c.desc && r[c.desc], c.cat && r[c.cat]].join(" ");
+    const mod = (MODULES.find(m=>m[1].test(text))||["Other"])[0];
+    const iss = ISSUES.filter(m=>m[1].test(text)).map(m=>m[0]);
+    const dow = (d.getDay()+6)%7;
+    return {num:(c.number&&r[c.number])||("Row "+(i+1)), date:d, pri:pn?(pn>3?"P4+":"P"+pn):"Unknown", mod, iss, dow, wk:dow>4?"Weekend":"Weekday", short:r[c.short]};
+  }).filter(Boolean);
+  const skipped = raw.length - rows.length;
+  $("status").textContent = rows.length + " tickets loaded" + (skipped ? " (" + skipped + " skipped: unreadable date)" : "") + ".";
+  filter = null; $("drop").classList.add("hidden"); $("app").classList.remove("hidden"); $("exp").classList.remove("hidden");
+  render();
+}
+function fail(msg){ $("status").textContent = msg; alert(msg); }
+
+function count(items, keyFn){ const m={}; items.forEach(t=>[].concat(keyFn(t)).forEach(k=>m[k]=(m[k]||0)+1)); return m; }
+function match(t){ if(!filter) return true;
+  return filter.t==="mod"?t.mod===filter.v : filter.t==="iss"?t.iss.includes(filter.v) : filter.t==="pri"?t.pri===filter.v : filter.t==="day"?DAYS[t.dow]===filter.v : t.wk===filter.v; }
+function isSel(t,v){ return filter && filter.t===t && filter.v===v; }
+function bars(el, t, pairs, peak){
+  const max = Math.max(1, ...pairs.map(p=>p[1]));
+  el.innerHTML = pairs.map(([n,v])=>`<button class="row ${isSel(t,n)?"sel":""} ${peak&&v===max&&v>0?"peak":""}" data-t="${t}" data-v="${n}"><span class="n">${n}</span><span class="b"><i style="width:${v/max*100}%"></i></span><span class="c">${v}</span></button>`).join("");
+}
+function render(){
+  const all = rows, total = all.length;
+  const dates = all.map(t=>t.date), span = Math.max(1, Math.round((Math.max(...dates)-Math.min(...dates))/86400000)+1);
+  const byDay = count(all,t=>DAYS[t.dow]), peakDay = DAYS.reduce((a,b)=>(byDay[b]||0)>(byDay[a]||0)?b:a);
+  $("kpi").innerHTML = `<div><b>${total}</b><span>Total tickets</span></div><div><b>${(total/span).toFixed(1)}</b><span>Average per day over ${span} days</span></div><div><b>${peakDay}</b><span>Busiest day</span></div>`;
+  const mc = count(all,t=>t.mod), ic = count(all,t=>t.iss);
+  const modPairs = MODULES.map(m=>[m[0],mc[m[0]]||0]).concat([["Other",mc["Other"]||0]]);
+  const issPairs = ISSUES.map(m=>[m[0],ic[m[0]]||0]);
+  $("mods").innerHTML = "<div id='m1'></div><div id='m2'></div>";
+  bars($("m1"),"mod",modPairs,false); bars($("m2"),"iss",issPairs,false);
+  const pc = count(all,t=>t.pri), pk = ["P1","P2","P3"].concat(pc["P4+"]?["P4+"]:[]);
+  const lbl = {P1:"Critical",P2:"High",P3:"Moderate","P4+":"Low / planning"};
+  $("pri").innerHTML = pk.map(p=>`<button class="${p.toLowerCase()} ${isSel("pri",p)?"sel":""}" data-t="pri" data-v="${p}"><b>${pc[p]||0}</b><span>${p} ${lbl[p]}</span></button>`).join("");
+  const wc = count(all,t=>t.wk);
+  $("split").innerHTML = ["Weekday","Weekend"].map(w=>`<button class="${isSel("wk",w)?"sel":""}" data-t="wk" data-v="${w}"><b>${wc[w]||0}</b><span>${w==="Weekday"?"Mon to Fri":"Sat and Sun"}</span></button>`).join("");
+  bars($("days"),"day",DAYS.map(d=>[d,byDay[d]||0]),true);
+  const list = all.filter(match).sort((a,b)=>b.date-a.date);
+  $("tt").textContent = filter ? `Tickets: ${filter.v} (${list.length})` : `All tickets (${list.length})`;
+  $("clear").classList.toggle("hidden", !filter);
+  const esc = s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  $("tb").innerHTML = list.slice(0,200).map(t=>`<tr><td>${esc(t.num)}</td><td>${t.date.toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"})}</td><td>${t.pri}</td><td><span class="tag">${esc(t.mod)}</span>${t.iss.map(i=>`<span class="tag">${i}</span>`).join("")}</td><td>${esc(t.short)}</td></tr>`).join("");
+  $("more").textContent = list.length>200 ? "Showing the latest 200. Use Export filtered CSV for the full list." : "";
+  window.__list = list;
+}
+document.addEventListener("click", e=>{
+  const b = e.target.closest("[data-t]"); if(!b) return;
+  const same = filter && filter.t===b.dataset.t && filter.v===b.dataset.v;
+  filter = same ? null : {t:b.dataset.t, v:b.dataset.v}; render();
+});
+$("clear").onclick = ()=>{ filter=null; render(); };
+$("exp").onclick = ()=>{
+  const q = s=>'"'+String(s).replace(/"/g,'""')+'"';
+  const csv = ["Number,Opened,Priority,Area of work,Issue type,Day,Short description"].concat(window.__list.map(t=>[t.num,t.date.toISOString(),t.pri,t.mod,t.iss.join("; "),DAYS[t.dow],t.short].map(q).join(","))).join("\n");
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.download = "tickets-filtered.csv"; a.click();
+};
+function readFile(f){
+  if (!f) return;
+  if (/\.csv$/i.test(f.name)){ const r=new FileReader(); r.onload=()=>build(csvParse(r.result)); r.readAsText(f); }
+  else { const r=new FileReader(); r.onload=()=>{ const wb=XLSX.read(r.result,{type:"array",cellDates:true}); build(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:""})); }; r.readAsArrayBuffer(f); }
+}
+$("file").onchange = e=>readFile(e.target.files[0]);
+["dragover","dragleave","drop"].forEach(ev=>$("drop").addEventListener(ev,e=>{ e.preventDefault(); $("drop").classList.toggle("over",ev==="dragover"); if(ev==="drop") readFile(e.dataTransfer.files[0]); }));
+$("demo").onclick = ()=>{
+  const subj = ["Sales order stuck in draft","PO approval failing for vendor","UAT environment not reachable","POS terminal slow at checkout","GL journal posting error","AR customer payment not applied","AP vendor invoice mismatch","Item master attribute missing","Warehouse picking list not generating","Payroll leave balance wrong","System very slow in the morning","User cannot login, access denied","Need role access for finance report"];
+  const pr = ["1 - Critical","2 - High","2 - High","3 - Moderate","3 - Moderate","3 - Moderate","4 - Low"];
+  const demo = Array.from({length:120},(_,i)=>{ const d=new Date(2026,9,1+Math.floor(Math.random()*30),9+Math.floor(Math.random()*9),0);
+    return {Number:"INC"+(100200+i), Opened:d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")+" "+String(d.getHours()).padStart(2,"0")+":00:00", Priority:pr[Math.floor(Math.random()*pr.length)], "Short description":subj[Math.floor(Math.random()*subj.length)]}; });
+  build(demo);
+};
+</script>
+</body>
+</html>
