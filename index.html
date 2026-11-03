@@ -102,7 +102,7 @@ th{color:var(--mute);font-weight:500;white-space:nowrap}
         <p class="note">Each ticket is assigned to its best-fit business module or technical support area using descriptive fields and other export columns. Issue types can overlap with the module category.</p></section>
       <section class="tile"><h2>Tickets by priority</h2><div class="pri" id="pri"></div></section>
       <section class="tile"><h2>Weekdays vs weekends</h2><div class="split" id="split"></div></section>
-      <section class="tile wide"><h2>Tickets by day of the week</h2><div id="days"></div></section>
+      <section class="tile wide"><h2>Tickets by day of the week</h2><div id="days"></div><p class="note" id="date-chart-note"></p></section>
     </div>
     <section class="tile">
       <div class="tbar"><h2 id="tt" style="margin:0">Tickets</h2><button id="clear" class="hidden">Clear filter</button></div>
@@ -227,13 +227,15 @@ function dateHeaderScore(header){
   if (/(created|opened|reported|updated|resolved|closed|requested|assigned|submitted|raised|logged|completed|approved|modified|entered)by$/.test(norm)) return -1;
   if (/(due|target|deadline|birth|dob|expiry|expiration|reminder)/.test(norm)) return -1;
   const has=(...terms)=>terms.some(term=>tokens.includes(term));
-  if (has("opened","open") && has("date","at","on","time")) return 130;
-  if (has("created","creation") && has("date","at","on","time")) return 125;
-  if (has("opened","open")) return 115;
-  if (has("created","creation")) return 110;
-  if (has("reported","raised","submitted","logged","received","occurred","recorded","entered") && has("date","at","on","time")) return 105;
-  if (has("reported","raised","submitted","logged","received","occurred","recorded","entered")) return 95;
-  if (has("incident","request","ticket","case") && has("date","at","on","time")) return 85;
+  if (has("opened","open") && has("date","at","on","time")) return 135;
+  if (has("created","creation") && has("date","at","on","time")) return 130;
+  if (has("opened","open")) return 120;
+  if (has("created","creation")) return 118;
+  if (has("reported","raised","submitted","submission","logged","received","occurred","recorded","entered") && has("date","at","on","time")) return 112;
+  if (has("reported","raised","submitted","submission","logged","received","occurred","recorded","entered")) return 105;
+  if (has("incident","request","ticket","case") && has("date","at","on","time")) return 95;
+  if (has("incident","request","ticket","case") && has("created","opened","reported","raised","submitted")) return 100;
+  if (has("updated","modified","resolved","closed","completed") && has("date","at","on","time")) return 70;
   if (has("date","datetime","timestamp")) return 75;
   if (has("resolved","closed","completed","updated","modified") && has("date","at","on","time")) return 55;
   if (has("date","datetime","timestamp","time")) return 35;
@@ -286,7 +288,13 @@ function parseDate(v, order="dmy"){
     const d=new Date(s); return isValidTicketDate(d)?d:null;
   }
   m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(?:\s*(AM|PM))?)?/i);
-  if(m) return makeLocalDate(+m[1],+m[2],+m[3],+(m[4]||0),+(m[5]||0),+(m[6]||0));
+  if(m){
+    let hour=+(m[4]||0);
+    const ampm=(m[7]||"").toUpperCase();
+    if(ampm==="PM" && hour<12) hour+=12;
+    if(ampm==="AM" && hour===12) hour=0;
+    return makeLocalDate(+m[1],+m[2],+m[3],hour,+(m[5]||0),+(m[6]||0));
+  }
 
   m=s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4}|\d{2})(?:[ T,]+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?\s*(AM|PM)?)?/i);
   if(m){
@@ -534,50 +542,14 @@ function render(){
   const all = rows, total = all.length;
   const dated = all.filter(t=>t.date);
   let span = 0, average = "N/A", peakDay = "N/A";
-  if (dated.length){
-    // Work with calendar-day numbers, not milliseconds between timestamps.
-    const dayNumbers = dated.map(t=>Date.UTC(t.date.getFullYear(),t.date.getMonth(),t.date.getDate())/86400000);
-    span = Math.max(1,Math.max(...dayNumbers)-Math.min(...dayNumbers)+1);
-    average = (dated.length/span).toFixed(2);
-    const byDatedDay = count(dated,t=>DAYS[t.dow]);
-    peakDay = DAYS.reduce((a,b)=>(byDatedDay[b]||0)>(byDatedDay[a]||0)?b:a);
-  }
-  $("kpi").innerHTML =
-    "<div><b>"+total+"</b><span>Total tickets</span></div>" +
-    "<div><b>"+average+"</b><span>"+(dated.length ? "Average dated tickets per calendar day across "+span+" days" : "Map a date column to calculate daily average")+"</span></div>" +
-    "<div><b>"+peakDay+"</b><span>"+(dated.length ? "Busiest day" : "Date data unavailable")+"</span></div>";
+  const datedWeekCounts = count(dated,t=>t.wk);
+  $("split").innerHTML = ["Weekday","Weekend"].map(w=>
+    "<button class='"+(isSel("wk",w)?"sel":"")+"' data-t='wk' data-v='"+w+"'><b>"+(datedWeekCounts[w]||0)+"</b><span>"+(w==="Weekday"?"Mon to Fri":"Sat and Sun")+"</span></button>"
+  ).join("");
+  const dayCounts = count(dated,t=>DAYS[t.dow]);
+  bars($("days"),"day",DAYS.map(d=>[d,dayCounts[d]||0]),true);
+  $("date-chart-note").textContent = dated.length ? "" : "No valid dates detected. Map the correct date column above to populate weekday and daily metrics.";
 
-  const moduleCounts = count(all,t=>t.mod), issueCounts = count(all,t=>t.iss);
-  const modulePairs = MODULES
-    .map(m=>[m[0],moduleCounts[m[0]]||0])
-    .filter(pair=>pair[1]>0)
-    .concat(Object.keys(moduleCounts)
-      .filter(name=>!MODULES.some(m=>m[0]===name) && moduleCounts[name]>0)
-      .map(name=>[name,moduleCounts[name]]));
-  const issuePairs = ISSUES.map(m=>[m[0],issueCounts[m[0]]||0]);
-  $("mods").innerHTML = "<div id='m1'></div><div id='m2'></div>";
-  bars($("m1"),"mod",modulePairs,false);
-  bars($("m2"),"iss",issuePairs,false);
-
-  const priorityCounts = {P1:0,P2:0,P3:0,P4:0};
-  all.forEach(ticket=>{ if(Object.prototype.hasOwnProperty.call(priorityCounts,ticket.pri)) priorityCounts[ticket.pri]++; });
-  const priorityLabels = {P1:"Critical",P2:"High",P3:"Moderate",P4:"Low"};
-  $("pri").innerHTML = ["P1","P2","P3","P4"].map(p=>{
-    const cls=p.toLowerCase();
-    return "<button class='"+cls+(isSel("pri",p)?" sel":"")+"' data-t='pri' data-v='"+p+"'><b>"+priorityCounts[p]+"</b><span>"+p+" "+priorityLabels[p]+"</span></button>";
-  }).join("");
-
-  if (dated.length){
-    const datedWeekCounts = count(dated,t=>t.wk);
-    $("split").innerHTML = ["Weekday","Weekend"].map(w=>
-      "<button class='"+(isSel("wk",w)?"sel":"")+"' data-t='wk' data-v='"+w+"'><b>"+(datedWeekCounts[w]||0)+"</b><span>"+(w==="Weekday"?"Mon to Fri":"Sat and Sun")+"</span></button>"
-    ).join("");
-    const dayCounts = count(dated,t=>DAYS[t.dow]);
-    bars($("days"),"day",DAYS.map(d=>[d,dayCounts[d]||0]),true);
-  } else {
-    $("split").innerHTML = "<p class='note'>No date column is mapped. Select a date field above and click Apply column mapping to enable this analysis.</p>";
-    $("days").innerHTML = "<p class='note'>No date column is mapped. Select a date field above and click Apply column mapping to enable this analysis.</p>";
-  }
 
   const list = all.filter(match).sort((a,b)=>(b.date ? b.date.getTime() : 0)-(a.date ? a.date.getTime() : 0));
   $("tt").textContent = filter ? "Tickets: "+filter.v+" ("+list.length+")" : "All tickets ("+list.length+")";
