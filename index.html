@@ -189,7 +189,7 @@ const FIELD_ALIASES = {
   text: ["shortdescription","shortdesc","subject","summary","title","description","issuedescription","incidentdescription","requestdescription","workdescription","taskdescription","issuetitle","requesttitle","problemdescription","shorttext","briefdescription"],
   number: ["number","ticketnumber","ticketid","incidentnumber","incidentid","requestid","caseid","casenumber","recordid","sysid","id"],
   category: ["category","subcategory","module","service","application","area","component","requesttype","issuetype","worktype"],
-  assigned: ["assignedto","assignedtouser","assigneduser","assignee","owner","responsibleperson","assignedgroup","assignmentgroup"]
+  assigned: ["assignedto","assignedtouser","assigneduser","assignee","owner","responsibleperson"]
 };
 
 function normalizeHeader(value){
@@ -330,6 +330,7 @@ function detectDateColumn(headers,rawRows){
   // Fall back to columns explicitly named with a date/time token when sample values are parseable.
   const fallback=headers.map(name=>{
     const tokens=headerTokens(name);
+    if(dateHeaderScore(name)<0) return null;
     if(!tokens.some(t=>["date","datetime","timestamp","time"].includes(t))) return null;
     const values=(rawRows||[]).slice(0,100).map(row=>row[name]).filter(v=>v!==null&&v!==undefined&&String(v).trim()!=="");
     const ratio=values.length?values.filter(v=>parseDate(v,inferDateOrder(values))).length/values.length:0;
@@ -415,7 +416,7 @@ function classifyModule(record,mapping){
   if (manufacturingRule && manufacturingRule[1].test(fullText)) return manufacturingRule[0];
 
   // A specific module or support area in the ticket description beats a broad Category field.
-  const genericLabels = new Set(["Performance & Availability","General IT / Software Support","Other Enterprise Application Support"]);
+  const genericLabels = new Set(["Performance & Availability","General IT / Software Support","Other Enterprise Application Support","Environment & Infrastructure"]);
   const descriptiveSpecificMatch = orderedRules.find(([label,pattern])=>
     !genericLabels.has(label) && pattern.test(descriptive)
   );
