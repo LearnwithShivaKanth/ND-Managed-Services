@@ -539,27 +539,102 @@ function bars(el, t, pairs, peak){
   el.innerHTML = pairs.map(([n,v])=>`<button class="row ${isSel(t,n)?"sel":""} ${peak&&v===max&&v>0?"peak":""}" data-t="${t}" data-v="${n}"><span class="n">${n}</span><span class="b"><i style="width:${v/max*100}%"></i></span><span class="c">${v}</span></button>`).join("");
 }
 function render(){
-  const all = rows, total = all.length;
-  const dated = all.filter(t=>t.date);
-  let span = 0, average = "N/A", peakDay = "N/A";
-  const datedWeekCounts = count(dated,t=>t.wk);
-  $("split").innerHTML = ["Weekday","Weekend"].map(w=>
-    "<button class='"+(isSel("wk",w)?"sel":"")+"' data-t='wk' data-v='"+w+"'><b>"+(datedWeekCounts[w]||0)+"</b><span>"+(w==="Weekday"?"Mon to Fri":"Sat and Sun")+"</span></button>"
+  const all = rows;
+  const total = all.length;
+  const dated = all.filter(ticket=>ticket.date instanceof Date && Number.isFinite(ticket.date.getTime()));
+  let span = 0;
+  let average = "N/A";
+  let peakDay = "N/A";
+
+  if(dated.length){
+    // Normalize every value to a calendar day before calculating the inclusive range.
+    const dayNumbers=dated.map(ticket=>
+      Date.UTC(ticket.date.getFullYear(),ticket.date.getMonth(),ticket.date.getDate())/86400000
+    );
+    span=Math.max(1,Math.max(...dayNumbers)-Math.min(...dayNumbers)+1);
+    average=(dated.length/span).toFixed(2);
+    const countsByDay=count(dated,ticket=>DAYS[ticket.dow]);
+    peakDay=DAYS.reduce((best,day)=>
+      (countsByDay[day]||0)>(countsByDay[best]||0)?day:best,DAYS[0]
+    );
+  }
+
+  // KPI cards always render. Date-specific values explain when a usable date is unavailable.
+  $("kpi").innerHTML=
+    "<div><b>"+total+"</b><span>Total tickets</span></div>"+
+    "<div><b>"+average+"</b><span>"+(dated.length
+      ?"Average dated tickets per calendar day across "+span+" days"
+      :"Map a date column to calculate daily average")+"</span></div>"+
+    "<div><b>"+peakDay+"</b><span>"+(dated.length?"Busiest day":"Date data unavailable")+"</span></div>";
+
+  // Render only categories that occur in the uploaded client file.
+  const moduleCounts=count(all,ticket=>ticket.mod);
+  const issueCounts=count(all,ticket=>ticket.iss);
+  const knownModuleNames=MODULES.map(module=>module[0]);
+  const modulePairs=Object.keys(moduleCounts)
+    .filter(name=>moduleCounts[name]>0)
+    .sort((a,b)=>{
+      const ai=knownModuleNames.indexOf(a), bi=knownModuleNames.indexOf(b);
+      if(ai>=0 && bi>=0) return ai-bi;
+      if(ai>=0) return -1;
+      if(bi>=0) return 1;
+      return a.localeCompare(b);
+    })
+    .map(name=>[name,moduleCounts[name]]);
+  const issuePairs=ISSUES.map(issue=>[issue[0],issueCounts[issue[0]]||0]);
+  $("mods").innerHTML="<div id='m1'></div><div id='m2'></div>";
+  bars($("m1"),"mod",modulePairs,false);
+  bars($("m2"),"iss",issuePairs,false);
+
+  // The priority panel is intentionally fixed to P1-P4. Missing/unknown values do not add tiles.
+  const priorityCounts={P1:0,P2:0,P3:0,P4:0};
+  all.forEach(ticket=>{
+    if(Object.prototype.hasOwnProperty.call(priorityCounts,ticket.pri)) priorityCounts[ticket.pri]++;
+  });
+  const priorityLabels={P1:"Critical",P2:"High",P3:"Moderate",P4:"Low"};
+  $("pri").innerHTML=["P1","P2","P3","P4"].map(priority=>{
+    const cls=priority.toLowerCase();
+    return "<button class='"+cls+(isSel("pri",priority)?" sel":"")+
+      "' data-t='pri' data-v='"+priority+"'><b>"+priorityCounts[priority]+
+      "</b><span>"+priority+" "+priorityLabels[priority]+"</span></button>";
+  }).join("");
+
+  // Keep the date panels visible even if this particular file has no usable date field.
+  const datedWeekCounts=count(dated,ticket=>ticket.wk);
+  $("split").innerHTML=["Weekday","Weekend"].map(dayType=>
+    "<button class='"+(isSel("wk",dayType)?"sel":"")+"' data-t='wk' data-v='"+dayType+
+    "'><b>"+(datedWeekCounts[dayType]||0)+"</b><span>"+
+    (dayType==="Weekday"?"Mon to Fri":"Sat and Sun")+"</span></button>"
   ).join("");
-  const dayCounts = count(dated,t=>DAYS[t.dow]);
-  bars($("days"),"day",DAYS.map(d=>[d,dayCounts[d]||0]),true);
-  $("date-chart-note").textContent = dated.length ? "" : "No valid dates detected. Map the correct date column above to populate weekday and daily metrics.";
+  const dayCounts=count(dated,ticket=>DAYS[ticket.dow]);
+  bars($("days"),"day",DAYS.map(day=>[day,dayCounts[day]||0]),true);
+  $("date-chart-note").textContent=dated.length
+    ?""
+    :"No usable opened/created date was detected. Select the correct date column in Client column mapping to populate these metrics.";
 
-
-  const list = all.filter(match).sort((a,b)=>(b.date ? b.date.getTime() : 0)-(a.date ? a.date.getTime() : 0));
-  $("tt").textContent = filter ? "Tickets: "+filter.v+" ("+list.length+")" : "All tickets ("+list.length+")";
+  const list=all.filter(match).sort((a,b)=>
+    (b.date?b.date.getTime():0)-(a.date?a.date.getTime():0)
+  );
+  $("tt").textContent=filter
+    ?"Tickets: "+filter.v+" ("+list.length+")"
+    :"All tickets ("+list.length+")";
   $("clear").classList.toggle("hidden",!filter);
-  const esc = s=>String(s ?? "").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-  $("tb").innerHTML = list.slice(0,200).map(t=>
-    "<tr><td>"+esc(t.num)+"</td><td>"+(t.date ? esc(t.date.toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"})) : "—")+"</td><td>"+(t.pri || "—")+"</td><td><span class='tag'>"+esc(t.mod)+"</span>"+t.iss.map(i=>"<span class='tag'>"+esc(i)+"</span>").join("")+"</td><td>"+esc(t.assigned)+"</td><td>"+esc(t.short)+"</td></tr>"
+  const esc=value=>String(value??"").replace(/[&<>"]/g,char=>({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"
+  }[char]));
+  $("tb").innerHTML=list.slice(0,200).map(ticket=>
+    "<tr><td>"+esc(ticket.num)+"</td>"+
+    "<td>"+(ticket.date?esc(ticket.date.toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"})):"—")+"</td>"+
+    "<td>"+(ticket.pri||"—")+"</td>"+
+    "<td><span class='tag'>"+esc(ticket.mod)+"</span>"+
+      ticket.iss.map(issue=>"<span class='tag'>"+esc(issue)+"</span>").join("")+"</td>"+
+    "<td>"+esc(ticket.assigned)+"</td>"+
+    "<td>"+esc(ticket.short)+"</td></tr>"
   ).join("");
-  $("more").textContent = list.length>200 ? "Showing the latest 200. Use Export filtered CSV for the full list." : "";
-  window.__list = list;
+  $("more").textContent=list.length>200
+    ?"Showing the latest 200. Use Export filtered CSV for the full list."
+    :"";
+  window.__list=list;
 }
 document.addEventListener("click", e=>{
   const b = e.target.closest("[data-t]"); if(!b) return;
