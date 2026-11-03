@@ -564,7 +564,30 @@ function isOrphanTicketRecord(record){
 
   return true;
 }
+function pivotValueMarker(value){
+  const normalized=normalizeHeader(value);
+  return normalized==="rowlabels" ||
+    normalized==="grandtotal" ||
+    /^(?:count|sum|average|min|max)of.+/.test(normalized) ||
+    /^(?:total|grandtotal)(?:count|records|tickets|incidents|requests)?$/.test(normalized);
+}
+function isPivotArtifactRow(record){
+  return Object.values(record||{}).some(value=>pivotValueMarker(value));
+}
+function hasValidTicketAnchor(record,mapping){
+  const id=mapping.number?String(record[mapping.number]??"").trim():"";
+  const realId=id && !isPlaceholderTicketIdentity(record,mapping.number);
+  const dateOrder=mapping.date?inferDateOrder([record[mapping.date]]):"dmy";
+  const date=mapping.date?parseDate(record[mapping.date],dateOrder):null;
+  return !!(realId || date);
+}
 function cleanTicketRows(raw){
+  const source=(raw||[]).filter(record=>record && typeof record==="object" && !Array.isArray(record));
+  const headers=Object.keys(source[0]||{});
+  const mapping=detectMapping(headers,source);
+  // Detect appended spreadsheet pivot/summary blocks once per uploaded file.
+  const pivotMode=source.some(record=>isPivotArtifactRow(record)) ||
+    headers.some(header=>pivotValueMarker(header));
   const accepted=[];
   let removed=0;
   for(const record of raw||[]){
@@ -574,17 +597,28 @@ function cleanTicketRows(raw){
     }
     const hasMeaningfulValue=Object.values(record).some(value=>!isBlankOrPlaceholder(value));
     const numberColumn=findColumn(Object.keys(record),FIELD_ALIASES.number);
-    if(!hasMeaningfulValue ||
-       isRepeatedHeaderRecord(record) ||
-       isExportSummaryRecord(record) ||
-       isPlaceholderTicketIdentity(record,numberColumn) ||
-       isOrphanTicketRecord(record)){
+    const discard=!hasMeaningfulValue ||
+      isRepeatedHeaderRecord(record) ||
+      isExportSummaryRecord(record) ||
+      isPivotArtifactRow(record) ||
+      isPlaceholderTicketIdentity(record,numberColumn);
+    if(discard){
+      removed++;
+      continue;
+    }
+    // When the same sheet contains a ticket table and a pivot table, rows with no
+    // actual ticket ID or opened/created date are pivot labels/counts, not incidents.
+    if(pivotMode && !hasValidTicketAnchor(record,mapping)){
+      removed++;
+      continue;
+    }
+    if(isOrphanTicketRecord(record)){
       removed++;
       continue;
     }
     accepted.push(record);
   }
-  return {rows:accepted,removed};
+  return {rows:accepted,removed,pivotMode};
 }
 function setRawData(raw){
   if (!Array.isArray(raw) || !raw.length) return fail("No ticket rows were found in this file.");
@@ -657,7 +691,7 @@ function build(raw,mapping){
 
   const missingDates = rows.filter(t=>!t.date).length;
   $("status").textContent = rows.length + " tickets loaded" +
-    (cleaned.removed ? " (" + cleaned.removed + " blank, repeated-header or export-summary rows ignored)" : "") +
+    (cleaned.removed ? " (" + cleaned.removed + " blank, orphan, repeated-header or export-summary rows ignored" + (cleaned.pivotMode ? "; pivot summary rows excluded" : "") + ")" : "") +
     (currentMapping.date
       ? (missingDates ? "; " + missingDates + " rows have missing or unreadable dates." : ".")
       : "; no date column mapped, so date-based metrics are unavailable.") +
