@@ -86,6 +86,7 @@ th{color:var(--mute);font-weight:500;white-space:nowrap}
     </div>
     <div class="mapping-grid">
       <div class="mapping-field"><label for="map-date">Opened / Created date</label><select id="map-date" class="map-select"></select></div>
+      <div class="mapping-field"><label for="map-date-format">Date format (when ambiguous)</label><select id="map-date-format" class="map-select"><option value="auto">Auto-detect (India default DD/MM/YYYY)</option><option value="dmy">DD/MM/YYYY</option><option value="mdy">MM/DD/YYYY</option></select></div>
       <div class="mapping-field"><label for="map-priority">Priority / Severity</label><select id="map-priority" class="map-select"></select></div>
       <div class="mapping-field"><label for="map-text">Subject / Description</label><select id="map-text" class="map-select"></select></div>
       <div class="mapping-field"><label for="map-number">Ticket ID / Number</label><select id="map-number" class="map-select"></select></div>
@@ -338,11 +339,52 @@ function detectDateColumn(headers,rawRows){
   }).filter(Boolean).sort((a,b)=>b.score-a.score);
   return fallback[0]?.name || "";
 }
+function detectTextColumn(headers,rawRows){
+  const definitions=[
+    {label:"short description",weight:140},
+    {label:"short desc",weight:135},
+    {label:"subject",weight:132},
+    {label:"issue description",weight:128},
+    {label:"ticket description",weight:126},
+    {label:"incident description",weight:124},
+    {label:"request description",weight:122},
+    {label:"description",weight:120},
+    {label:"summary",weight:116},
+    {label:"title",weight:112},
+    {label:"brief description",weight:108},
+    {label:"details",weight:100},
+    {label:"work description",weight:96},
+    {label:"task description",weight:94}
+  ];
+  const candidates=[];
+  for(const header of headers){
+    const norm=normalizeHeader(header);
+    const tokens=headerTokens(header);
+    if(!norm) continue;
+    if(/(assigned|assignee|owner|responsible|requester|requestedby|requestedfor|caller|contact|email|phone|createdby|openedby|resolvedby|closedby|worknotes|comments|journal|group|team)/i.test(norm)) continue;
+    let weight=-1;
+    for(const item of definitions){
+      const aliasNorm=normalizeHeader(item.label);
+      if(norm===aliasNorm || containsTokenPhrase(header,item.label)){
+        weight=Math.max(weight,item.weight);
+      }
+    }
+    if(weight<0) continue;
+    const values=(rawRows||[]).slice(0,200).map(row=>row[header]);
+    const nonempty=values.filter(value=>value!==null&&value!==undefined&&String(value).trim()!=="").length;
+    const coverage=values.length?nonempty/values.length:0;
+    if(coverage===0) continue;
+    // Header semantics remain the main signal; coverage breaks ties and avoids an empty preferred column.
+    candidates.push({header,score:weight+coverage*45,coverage});
+  }
+  candidates.sort((a,b)=>b.score-a.score);
+  return candidates[0]?.header || "";
+}
 function detectMapping(headers,rawRows=[]){
   return {
     date:detectDateColumn(headers,rawRows),
     priority:findColumn(headers,FIELD_ALIASES.priority),
-    text:findColumn(headers,FIELD_ALIASES.text),
+    text:detectTextColumn(headers,rawRows),
     number:findColumn(headers,FIELD_ALIASES.number),
     category:findColumn(headers,FIELD_ALIASES.category),
     assigned:findColumn(headers,FIELD_ALIASES.assigned)
@@ -366,6 +408,7 @@ function populateMappingSelect(id, headers, selected){
 function readMapping(){
   return {
     date:$("map-date").value,
+    dateOrder:$("map-date-format").value,
     priority:$("map-priority").value,
     text:$("map-text").value,
     number:$("map-number").value,
@@ -464,6 +507,7 @@ function setRawData(raw){
 
   currentMapping = detectMapping(sourceHeaders,rawRows);
   populateMappingSelect("map-date",sourceHeaders,currentMapping.date);
+  $("map-date-format").value = "auto";
   populateMappingSelect("map-priority",sourceHeaders,currentMapping.priority);
   populateMappingSelect("map-text",sourceHeaders,currentMapping.text);
   populateMappingSelect("map-number",sourceHeaders,currentMapping.number);
@@ -485,7 +529,9 @@ function build(raw,mapping){
   if (!raw || !raw.length) return fail("No rows found in that file.");
   currentMapping = mapping || detectMapping(Object.keys(raw[0] || {}),raw);
   currentDateOrder = currentMapping.date
-    ? inferDateOrder(raw.map(row=>row[currentMapping.date]).filter(v=>v!==null&&v!==undefined&&String(v).trim()!==""))
+    ? (currentMapping.dateOrder && currentMapping.dateOrder!=="auto"
+      ? currentMapping.dateOrder
+      : inferDateOrder(raw.map(row=>row[currentMapping.date]).filter(v=>v!==null&&v!==undefined&&String(v).trim()!=="")))
     : "dmy";
 
   let invalidDates = 0;
