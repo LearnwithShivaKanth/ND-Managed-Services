@@ -48,6 +48,9 @@ main{padding:0 clamp(16px,4vw,40px) 40px;max-width:1280px;margin:0 auto}
 .split b{display:block;font-size:1.9rem;line-height:1.1}
 .split span{font-size:.8rem;color:var(--mute)}
 .note{color:var(--mute);font-size:.8rem;margin:10px 0 0}
+.mapping-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:14px}
+.mapping-field label{display:block;color:var(--mute);font-size:.78rem;font-weight:600;margin-bottom:5px}
+.map-select{width:100%;min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);font:inherit;font-size:.85rem}
 .tbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:10px}
 .wrap{overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-size:.84rem}
@@ -72,7 +75,25 @@ th{color:var(--mute);font-weight:500;white-space:nowrap}
   </div>
 </header>
 <main>
-  <div id="drop">Drop a ServiceNow .csv or .xlsx export here, or use Upload tickets.<br>Needed columns: Priority, Opened (date), Short description. Optional: Description, Category, Number.</div>
+  <div id="drop">Drop a ServiceNow or client ticket export (.csv or .xlsx) here, or use Upload tickets.<br>Required: a header row and ticket rows. Date, priority, subject, ID and category columns are detected where available; other client-specific columns are supported.</div>
+  <section id="mapping" class="tile hidden" style="margin-bottom:16px">
+    <div class="tbar">
+      <div>
+        <h2 style="margin:0">Client column mapping</h2>
+        <p class="note" style="margin-top:4px">We detect common field names automatically. For a client-specific export, select the matching columns and apply the mapping. Priority and date are optional.</p>
+      </div>
+      <button id="apply-mapping" class="btn primary" type="button">Apply column mapping</button>
+    </div>
+    <div class="mapping-grid">
+      <div class="mapping-field"><label for="map-date">Opened / Created date</label><select id="map-date" class="map-select"></select></div>
+      <div class="mapping-field"><label for="map-priority">Priority / Severity</label><select id="map-priority" class="map-select"></select></div>
+      <div class="mapping-field"><label for="map-text">Subject / Description</label><select id="map-text" class="map-select"></select></div>
+      <div class="mapping-field"><label for="map-number">Ticket ID / Number</label><select id="map-number" class="map-select"></select></div>
+      <div class="mapping-field"><label for="map-category">Category / Module</label><select id="map-category" class="map-select"></select></div>
+    </div>
+    <p class="note" id="mapping-note"></p>
+  </section>
+
   <div id="app" class="hidden">
     <div class="kpi" id="kpi"></div>
     <div class="grid">
@@ -84,7 +105,7 @@ th{color:var(--mute);font-weight:500;white-space:nowrap}
     </div>
     <section class="tile">
       <div class="tbar"><h2 id="tt" style="margin:0">Tickets</h2><button id="clear" class="hidden">Clear filter</button></div>
-      <div class="wrap"><table><thead><tr><th>Number</th><th>Opened</th><th>Priority</th><th>Categories</th><th>Short description</th></tr></thead><tbody id="tb"></tbody></table></div>
+      <div class="wrap"><table><thead><tr><th>Number / ID</th><th>Opened / Created</th><th>Priority</th><th>Categories</th><th>Short description</th></tr></thead><tbody id="tb"></tbody></table></div>
       <p class="note" id="more"></p>
     </section>
   </div>
@@ -112,51 +133,111 @@ const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sun
 const $ = id => document.getElementById(id);
 let rows = [], filter = null;
 
-const HEAD = {
-  number: /^(number|ticket|incident|id)/i, opened: /(opened|created|open date|sys_created)/i,
-  priority: /priority/i, short: /(short.?desc|summary|title)/i,
-  desc: /^(description|details?)$/i, cat: /^(category|subcategory|module|u_module|service)/i
+const FIELD_ALIASES = {
+  date: ["opened", "openedat", "openedon", "openeddate", "createdat", "createdon", "createddate", "creationdate", "datecreated", "dateopened", "syscreatedon", "syscreated", "reportedat", "reportedon", "reporteddate", "submittedat", "submittedon", "loggedat", "timestamp", "incidentdate", "requestdate"],
+  priority: ["priority", "ticketpriority", "prioritylevel", "severity", "urgency"],
+  text: ["shortdescription", "shortdesc", "subject", "summary", "title", "description", "details", "issuedescription", "problem", "requestdescription", "workdescription", "taskdescription", "comments", "notes"],
+  number: ["number", "ticketnumber", "ticketid", "incidentnumber", "incidentid", "requestid", "caseid", "casenumber", "recordid", "sysid", "id"],
+  category: ["category", "subcategory", "module", "service", "application", "area", "component", "requesttype", "issuetype", "worktype"]
 };
-function pick(headers, re){ return headers.find(h => re.test(String(h).trim())); }
+const $ = id => document.getElementById(id);
+let rows = [], filter = null, rawRows = [], sourceHeaders = [], currentMapping = {};
 
+function normalizeHeader(value){
+  return String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+function findColumn(headers, aliases){
+  const normalized = headers.map(h=>({name:h,norm:normalizeHeader(h)}));
+  for (const alias of aliases){
+    const found = normalized.find(h=>h.norm===alias);
+    if (found) return found.name;
+  }
+  for (const alias of aliases){
+    if (alias.length < 5) continue;
+    const found = normalized.find(h=>h.norm.startsWith(alias));
+    if (found) return found.name;
+  }
+  for (const alias of aliases){
+    if (alias.length < 6) continue;
+    const found = normalized.find(h=>h.norm.includes(alias));
+    if (found) return found.name;
+  }
+  return "";
+}
+function detectMapping(headers){
+  return {
+    date:findColumn(headers,FIELD_ALIASES.date),
+    priority:findColumn(headers,FIELD_ALIASES.priority),
+    text:findColumn(headers,FIELD_ALIASES.text),
+    number:findColumn(headers,FIELD_ALIASES.number),
+    category:findColumn(headers,FIELD_ALIASES.category)
+  };
+}
+function populateMappingSelect(id, headers, selected){
+  const select = $(id);
+  select.innerHTML = "";
+  const optional = document.createElement("option");
+  optional.value = "";
+  optional.textContent = "— Not available / not mapped —";
+  select.appendChild(optional);
+  headers.forEach(header=>{
+    const option = document.createElement("option");
+    option.value = header;
+    option.textContent = header;
+    select.appendChild(option);
+  });
+  select.value = selected || "";
+}
+function readMapping(){
+  return {
+    date:$("map-date").value,
+    priority:$("map-priority").value,
+    text:$("map-text").value,
+    number:$("map-number").value,
+    category:$("map-category").value
+  };
+}
 function isValidTicketDate(d){
-  return d instanceof Date && Number.isFinite(d.getTime()) && d.getFullYear() > 1900;
+  return d instanceof Date && Number.isFinite(d.getTime()) && d.getFullYear() > 1900 && d.getFullYear() < 2200;
 }
 function makeLocalDate(y, month, day, hour=0, minute=0, second=0){
   const d = new Date(y, month-1, day, hour, minute, second);
   return isValidTicketDate(d) && d.getFullYear()===y && d.getMonth()===month-1 && d.getDate()===day ? d : null;
 }
 function excelSerialDate(serial){
-  // Excel serial 0/blank maps to 30-Dec-1899; it is not a valid ticket-opened date.
   if (!Number.isFinite(serial) || serial < 1 || serial > 100000) return null;
-  const d = new Date(Date.UTC(1899, 11, 30) + Math.round(serial * 86400000));
-  return isValidTicketDate(d) ? d : null;
+  const utc = new Date(Date.UTC(1899,11,30) + Math.round(serial * 86400000));
+  return makeLocalDate(utc.getUTCFullYear(),utc.getUTCMonth()+1,utc.getUTCDate(),utc.getUTCHours(),utc.getUTCMinutes(),utc.getUTCSeconds());
 }
 function parseDate(v){
   if (v instanceof Date) return isValidTicketDate(v) ? v : null;
   if (typeof v === "number") return excelSerialDate(v);
-
   const s = String(v ?? "").trim();
   if (!s) return null;
 
-  // Handle compact YYYYMMDD values before numeric Excel serials.
   let m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
-  if (m) return makeLocalDate(+m[1], +m[2], +m[3]);
-
-  // Excel serials sometimes arrive as text rather than numbers.
+  if (m) return makeLocalDate(+m[1],+m[2],+m[3]);
   if (/^\d+(?:\.\d+)?$/.test(s)) return excelSerialDate(Number(s));
 
-  // ISO dates and local date-times.
-  m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
-  if (m) return makeLocalDate(+m[1], +m[2], +m[3], +(m[4]||0), +(m[5]||0), +(m[6]||0));
+  m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (m) return makeLocalDate(+m[1],+m[2],+m[3],+(m[4]||0),+(m[5]||0),+(m[6]||0));
 
-  // ServiceNow/India-style dates: dd/mm/yyyy.
-  m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
-  if (m) return makeLocalDate(+m[3], +m[2], +m[1], +(m[4]||0), +(m[5]||0), +(m[6]||0));
+  m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (m) return makeLocalDate(+m[3],+m[2],+m[1],+(m[4]||0),+(m[5]||0),+(m[6]||0));
 
-  // Respect timezone-qualified ISO strings, while rejecting invalid/epoch dates.
   const d = new Date(s);
   return isValidTicketDate(d) ? d : null;
+}
+function parsePriority(value){
+  const s = String(value ?? "").trim();
+  if (!s) return "Not provided";
+  if (/\b(?:p\s?1|priority\s?1|sev(?:erity)?\s?1|critical|urgent)\b/i.test(s)) return "P1";
+  if (/\b(?:p\s?2|priority\s?2|sev(?:erity)?\s?2|high)\b/i.test(s)) return "P2";
+  if (/\b(?:p\s?3|priority\s?3|sev(?:erity)?\s?3|moderate|medium)\b/i.test(s)) return "P3";
+  if (/\b(?:p\s?4|priority\s?4|sev(?:erity)?\s?4|low|minor)\b/i.test(s)) return "P4+";
+  const numeric = s.match(/^\s*([1-4])(?:\s|[-:.]|$)/);
+  if (numeric) return Number(numeric[1])===1?"P1":Number(numeric[1])===2?"P2":Number(numeric[1])===3?"P3":"P4+";
+  return s;
 }
 function csvParse(text){
   const out=[]; let row=[], cur="", q=false;
@@ -172,32 +253,82 @@ function csvParse(text){
   const h = out.shift().map(x=>x.replace(/^\uFEFF/,"").trim());
   return out.filter(r=>r.some(x=>x.trim())).map(r=>Object.fromEntries(h.map((k,i)=>[k,r[i]||""])));
 }
-function build(raw){
-  if (!raw.length) return fail("No rows found in that file.");
-  const H = Object.keys(raw[0]), c = {};
-  for (const k in HEAD) c[k] = pick(H, HEAD[k]);
-  const missing = ["opened","priority","short"].filter(k=>!c[k]);
-  if (missing.length) return fail("Could not find column(s): " + missing.join(", ") + ". Found: " + H.join(", "));
+function setRawData(raw){
+  if (!Array.isArray(raw) || !raw.length) return fail("No ticket rows were found in this file.");
+  rawRows = raw;
+  sourceHeaders = Object.keys(raw[0] || {});
+  if (!sourceHeaders.length) return fail("The file has no readable column headers. Please check that the first row contains column names.");
+
+  currentMapping = detectMapping(sourceHeaders);
+  populateMappingSelect("map-date",sourceHeaders,currentMapping.date);
+  populateMappingSelect("map-priority",sourceHeaders,currentMapping.priority);
+  populateMappingSelect("map-text",sourceHeaders,currentMapping.text);
+  populateMappingSelect("map-number",sourceHeaders,currentMapping.number);
+  populateMappingSelect("map-category",sourceHeaders,currentMapping.category);
+
+  $("mapping").classList.remove("hidden");
+  $("drop").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  $("exp").classList.remove("hidden");
+  $("mapping-note").textContent = "Detected " + sourceHeaders.length + " columns. " +
+    (currentMapping.date ? "Date: " + currentMapping.date + ". " : "No date field detected. ") +
+    (currentMapping.priority ? "Priority: " + currentMapping.priority + ". " : "Priority is optional and was not detected. ") +
+    (currentMapping.text ? "Description: " + currentMapping.text + "." : "No subject/description field detected; the dashboard will still analyse available columns.");
+  build(rawRows,currentMapping);
+}
+function build(raw,mapping){
+  if (!raw || !raw.length) return fail("No rows found in that file.");
+  currentMapping = mapping || detectMapping(Object.keys(raw[0] || {}));
+
+  let invalidDates = 0;
   rows = raw.map((r,i)=>{
-    const d = parseDate(r[c.opened]); if (!d) return null;
-    const pm = String(r[c.priority]).match(/[1-9]/), pn = pm ? +pm[0] : 0;
-    const text = [r[c.short], c.desc && r[c.desc], c.cat && r[c.cat]].join(" ");
-    const mod = (MODULES.find(m=>m[1].test(text))||["Other"])[0];
-    const iss = ISSUES.filter(m=>m[1].test(text)).map(m=>m[0]);
-    const dow = (d.getDay()+6)%7;
-    return {num:(c.number&&r[c.number])||("Row "+(i+1)), date:d, pri:pn?(pn>3?"P4+":"P"+pn):"Unknown", mod, iss, dow, wk:dow>4?"Weekend":"Weekday", short:r[c.short]};
-  }).filter(Boolean);
-  const skipped = raw.length - rows.length;
-  if (!rows.length) return fail("No tickets with a valid Opened date were found. Check the Opened column values.");
-  $("status").textContent = rows.length + " tickets loaded" + (skipped ? " (" + skipped + " skipped: missing or invalid Opened date)" : "") + ".";
-  filter = null; $("drop").classList.add("hidden"); $("app").classList.remove("hidden"); $("exp").classList.remove("hidden");
+    const dateValue = currentMapping.date ? parseDate(r[currentMapping.date]) : null;
+    if (currentMapping.date && !dateValue) invalidDates++;
+
+    const priority = currentMapping.priority ? parsePriority(r[currentMapping.priority]) : "Not provided";
+    const displayText = currentMapping.text ? String(r[currentMapping.text] ?? "").trim() : "";
+    const categoryValue = currentMapping.category ? String(r[currentMapping.category] ?? "").trim() : "";
+
+    // Analyse all client-provided fields, not just a fixed set of column names.
+    const searchable = Object.keys(r)
+      .filter(key=>key!==currentMapping.date && key!==currentMapping.number)
+      .map(key=>String(r[key] ?? "").trim())
+      .filter(Boolean)
+      .join(" ");
+    const classificationText = searchable + " " + categoryValue;
+    const mod = (MODULES.find(m=>m[1].test(classificationText))||["Other"])[0];
+    const issues = ISSUES.filter(m=>m[1].test(classificationText)).map(m=>m[0]);
+    const dow = dateValue ? (dateValue.getDay()+6)%7 : null;
+    const fallbackNumber = currentMapping.number && String(r[currentMapping.number] ?? "").trim();
+    return {
+      num:fallbackNumber || ("Row "+(i+1)),
+      date:dateValue,
+      pri:priority,
+      mod:mod,
+      iss:issues,
+      dow:dow,
+      wk:dow===null?null:(dow>4?"Weekend":"Weekday"),
+      short:displayText || categoryValue || "—"
+    };
+  });
+
+  const missingDates = rows.filter(t=>!t.date).length;
+  $("status").textContent = rows.length + " tickets loaded" +
+    (currentMapping.date
+      ? (missingDates ? " (" + missingDates + " rows with missing or unreadable dates)." : ".")
+      : ". No date column mapped; date-based metrics are unavailable.") +
+    (currentMapping.priority ? "" : " Priority was not provided; tickets are marked accordingly.");
+  $("drop").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  $("exp").classList.remove("hidden");
+  $("mapping").classList.remove("hidden");
   render();
 }
 function fail(msg){ $("status").textContent = msg; alert(msg); }
 
 function count(items, keyFn){ const m={}; items.forEach(t=>[].concat(keyFn(t)).forEach(k=>m[k]=(m[k]||0)+1)); return m; }
 function match(t){ if(!filter) return true;
-  return filter.t==="mod"?t.mod===filter.v : filter.t==="iss"?t.iss.includes(filter.v) : filter.t==="pri"?t.pri===filter.v : filter.t==="day"?DAYS[t.dow]===filter.v : t.wk===filter.v; }
+  return filter.t==="mod"?t.mod===filter.v : filter.t==="iss"?t.iss.includes(filter.v) : filter.t==="pri"?t.pri===filter.v : filter.t==="day"?t.dow!==null && DAYS[t.dow]===filter.v : t.wk===filter.v; }
 function isSel(t,v){ return filter && filter.t===t && filter.v===v; }
 function bars(el, t, pairs, peak){
   const max = Math.max(1, ...pairs.map(p=>p[1]));
@@ -205,28 +336,59 @@ function bars(el, t, pairs, peak){
 }
 function render(){
   const all = rows, total = all.length;
-  // Use whole calendar dates, not elapsed milliseconds, so times and DST cannot distort the span.
-  const dayNumbers = all.map(t=>Date.UTC(t.date.getFullYear(),t.date.getMonth(),t.date.getDate())/86400000);
-  const span = Math.max(1, Math.max(...dayNumbers)-Math.min(...dayNumbers)+1);
-  const averagePerDay = (total/span).toFixed(2);
-  const byDay = count(all,t=>DAYS[t.dow]), peakDay = DAYS.reduce((a,b)=>(byDay[b]||0)>(byDay[a]||0)?b:a);
-  $("kpi").innerHTML = `<div><b>${total}</b><span>Total tickets</span></div><div><b>${averagePerDay}</b><span>Average tickets per day across ${span} calendar days</span></div><div><b>${peakDay}</b><span>Busiest day</span></div>`;
-  const mc = count(all,t=>t.mod), ic = count(all,t=>t.iss);
-  const modPairs = MODULES.map(m=>[m[0],mc[m[0]]||0]).concat([["Other",mc["Other"]||0]]);
-  const issPairs = ISSUES.map(m=>[m[0],ic[m[0]]||0]);
+  const dated = all.filter(t=>t.date);
+  let span = 0, average = "N/A", peakDay = "N/A";
+  if (dated.length){
+    // Work with calendar-day numbers, not milliseconds between timestamps.
+    const dayNumbers = dated.map(t=>Date.UTC(t.date.getFullYear(),t.date.getMonth(),t.date.getDate())/86400000);
+    span = Math.max(1,Math.max(...dayNumbers)-Math.min(...dayNumbers)+1);
+    average = (dated.length/span).toFixed(2);
+    const byDatedDay = count(dated,t=>DAYS[t.dow]);
+    peakDay = DAYS.reduce((a,b)=>(byDatedDay[b]||0)>(byDatedDay[a]||0)?b:a);
+  }
+  $("kpi").innerHTML =
+    "<div><b>"+total+"</b><span>Total tickets</span></div>" +
+    "<div><b>"+average+"</b><span>"+(dated.length ? "Average dated tickets per calendar day across "+span+" days" : "Map a date column to calculate daily average")+"</span></div>" +
+    "<div><b>"+peakDay+"</b><span>"+(dated.length ? "Busiest day" : "Date data unavailable")+"</span></div>";
+
+  const moduleCounts = count(all,t=>t.mod), issueCounts = count(all,t=>t.iss);
+  const modulePairs = MODULES.map(m=>[m[0],moduleCounts[m[0]]||0]).concat([["Other",moduleCounts["Other"]||0]]);
+  const issuePairs = ISSUES.map(m=>[m[0],issueCounts[m[0]]||0]);
   $("mods").innerHTML = "<div id='m1'></div><div id='m2'></div>";
-  bars($("m1"),"mod",modPairs,false); bars($("m2"),"iss",issPairs,false);
-  const pc = count(all,t=>t.pri), pk = ["P1","P2","P3"].concat(pc["P4+"]?["P4+"]:[]);
-  const lbl = {P1:"Critical",P2:"High",P3:"Moderate","P4+":"Low / planning"};
-  $("pri").innerHTML = pk.map(p=>`<button class="${p.toLowerCase()} ${isSel("pri",p)?"sel":""}" data-t="pri" data-v="${p}"><b>${pc[p]||0}</b><span>${p} ${lbl[p]}</span></button>`).join("");
-  const wc = count(all,t=>t.wk);
-  $("split").innerHTML = ["Weekday","Weekend"].map(w=>`<button class="${isSel("wk",w)?"sel":""}" data-t="wk" data-v="${w}"><b>${wc[w]||0}</b><span>${w==="Weekday"?"Mon to Fri":"Sat and Sun"}</span></button>`).join("");
-  bars($("days"),"day",DAYS.map(d=>[d,byDay[d]||0]),true);
-  const list = all.filter(match).sort((a,b)=>b.date-a.date);
-  $("tt").textContent = filter ? `Tickets: ${filter.v} (${list.length})` : `All tickets (${list.length})`;
-  $("clear").classList.toggle("hidden", !filter);
-  const esc = s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-  $("tb").innerHTML = list.slice(0,200).map(t=>`<tr><td>${esc(t.num)}</td><td>${t.date.toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"})}</td><td>${t.pri}</td><td><span class="tag">${esc(t.mod)}</span>${t.iss.map(i=>`<span class="tag">${i}</span>`).join("")}</td><td>${esc(t.short)}</td></tr>`).join("");
+  bars($("m1"),"mod",modulePairs,false);
+  bars($("m2"),"iss",issuePairs,false);
+
+  const priorityCounts = count(all,t=>t.pri);
+  const priorityOrder = ["P1","P2","P3","P4+","Not provided"];
+  const priorityKeys = priorityOrder.filter(p=>priorityCounts[p]).concat(
+    Object.keys(priorityCounts).filter(p=>priorityOrder.indexOf(p)<0).sort()
+  );
+  const priorityLabels = {P1:"Critical",P2:"High",P3:"Moderate","P4+":"Low / planning","Not provided":"Not provided"};
+  $("pri").innerHTML = priorityKeys.map(p=>{
+    const cls = p==="P1"?"p1":p==="P2"?"p2":"p3";
+    const label = priorityLabels[p] || p;
+    return "<button class='"+cls+(isSel("pri",p)?" sel":"")+"' data-t='pri' data-v='"+String(p).replace(/'/g,"&#39;")+"'><b>"+priorityCounts[p]+"</b><span>"+p+" "+label+"</span></button>";
+  }).join("");
+
+  if (dated.length){
+    const datedWeekCounts = count(dated,t=>t.wk);
+    $("split").innerHTML = ["Weekday","Weekend"].map(w=>
+      "<button class='"+(isSel("wk",w)?"sel":"")+"' data-t='wk' data-v='"+w+"'><b>"+(datedWeekCounts[w]||0)+"</b><span>"+(w==="Weekday"?"Mon to Fri":"Sat and Sun")+"</span></button>"
+    ).join("");
+    const dayCounts = count(dated,t=>DAYS[t.dow]);
+    bars($("days"),"day",DAYS.map(d=>[d,dayCounts[d]||0]),true);
+  } else {
+    $("split").innerHTML = "<p class='note'>No date column is mapped. Select a date field above and click Apply column mapping to enable this analysis.</p>";
+    $("days").innerHTML = "<p class='note'>No date column is mapped. Select a date field above and click Apply column mapping to enable this analysis.</p>";
+  }
+
+  const list = all.filter(match).sort((a,b)=>(b.date ? b.date.getTime() : 0)-(a.date ? a.date.getTime() : 0));
+  $("tt").textContent = filter ? "Tickets: "+filter.v+" ("+list.length+")" : "All tickets ("+list.length+")";
+  $("clear").classList.toggle("hidden",!filter);
+  const esc = s=>String(s ?? "").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  $("tb").innerHTML = list.slice(0,200).map(t=>
+    "<tr><td>"+esc(t.num)+"</td><td>"+(t.date ? esc(t.date.toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"})) : "—")+"</td><td>"+esc(t.pri)+"</td><td><span class='tag'>"+esc(t.mod)+"</span>"+t.iss.map(i=>"<span class='tag'>"+esc(i)+"</span>").join("")+"</td><td>"+esc(t.short)+"</td></tr>"
+  ).join("");
   $("more").textContent = list.length>200 ? "Showing the latest 200. Use Export filtered CSV for the full list." : "";
   window.__list = list;
 }
@@ -243,10 +405,34 @@ $("exp").onclick = ()=>{
 };
 function readFile(f){
   if (!f) return;
-  if (/\.csv$/i.test(f.name)){ const r=new FileReader(); r.onload=()=>build(csvParse(r.result)); r.readAsText(f); }
-  else { const r=new FileReader(); r.onload=()=>{ const wb=XLSX.read(r.result,{type:"array",cellDates:true}); build(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:""})); }; r.readAsArrayBuffer(f); }
+  try {
+    if (/\.csv$/i.test(f.name)){
+      const reader = new FileReader();
+      reader.onload = ()=>{ try { setRawData(csvParse(reader.result)); } catch(error) { fail("Could not read this CSV file: "+error.message); } };
+      reader.onerror = ()=>fail("The CSV file could not be read.");
+      reader.readAsText(f);
+    } else {
+      const reader = new FileReader();
+      reader.onload = ()=>{
+        try {
+          const wb = XLSX.read(reader.result,{type:"array",cellDates:true});
+          const firstSheet = wb.Sheets[wb.SheetNames[0]];
+          if (!firstSheet) return fail("The Excel workbook does not contain a readable worksheet.");
+          setRawData(XLSX.utils.sheet_to_json(firstSheet,{defval:"",raw:true}));
+        } catch(error) { fail("Could not read this Excel file: "+error.message); }
+      };
+      reader.onerror = ()=>fail("The Excel file could not be read.");
+      reader.readAsArrayBuffer(f);
+    }
+  } catch(error) {
+    fail("Could not process this file: "+error.message);
+  }
 }
 $("file").onchange = e=>readFile(e.target.files[0]);
+$("apply-mapping").onclick = ()=>{
+  if (!rawRows.length) return;
+  build(rawRows,readMapping());
+};
 ["dragover","dragleave","drop"].forEach(ev=>$("drop").addEventListener(ev,e=>{ e.preventDefault(); $("drop").classList.toggle("over",ev==="dragover"); if(ev==="drop") readFile(e.dataTransfer.files[0]); }));
 $("demo").onclick = ()=>{
   const subj = ["Sales order stuck in draft","PO approval failing for vendor","UAT environment not reachable","POS terminal slow at checkout","GL journal posting error","AR customer payment not applied","AP vendor invoice mismatch","Item master attribute missing","Warehouse picking list not generating","Payroll leave balance wrong","System very slow in the morning","User cannot login, access denied","Need role access for finance report"];
