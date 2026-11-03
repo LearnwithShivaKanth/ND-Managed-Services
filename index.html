@@ -308,39 +308,50 @@ function classifyModule(record,mapping){
   );
   const descriptiveHeader = /(short.?desc|subject|summary|title|description|details|problem|request|comment|work.?note|resolution|close.?note|error|message|symptom|failure|activity|justification|cause|impact|step|diagnostic|log)/i;
   const contextHeader = /(category|subcategory|module|service|application|area|component|assignment.?group|group|team|configuration.?item|\bci\b|product|system|environment|instance|workflow|template|source|request.?type|service.?instance|platform|process)/i;
-  const descriptive = entries.filter(([key])=>descriptiveHeader.test(key)).map(([,value])=>String(value)).join(" ");
-  const context = entries.filter(([key])=>contextHeader.test(key)).map(([key,value])=>key+": "+String(value)).join(" ");
-  const allFields = entries.map(([key,value])=>key+": "+String(value)).join(" ");
-  const primaryText = (descriptive+" "+context).toLowerCase();
-  const fullText = (primaryText+" "+allFields).toLowerCase();
-
-  // The word "production" by itself describes the live environment, not the manufacturing module.
-  // Manufacturing is recognised only when process terms such as orders, BOMs, routes or shop-floor work appear.
-  const manufacturingSignal = /\b(production order|prod order|batch order|manufactur(?:e|ing)|shop floor|production floor|route card|job card|report as finished|\braf\b|material consumption|bill of materials|\bbom\b|production scheduling|production control|co[- ]?product|by[- ]?product)\b/i.test(fullText);
-  if (!manufacturingSignal) {
-    const environmentFields = entries
-      .filter(([key])=>/(environment|instance|tier|system.?type|deployment.?target|server.?type)/i.test(key))
-      .map(([,value])=>String(value).trim().toLowerCase());
-    const contextFields = entries
-      .filter(([key])=>/(category|subcategory|module|source|team|assignment.?group|service|request.?type)/i.test(key))
-      .map(([,value])=>String(value).trim().toLowerCase());
-    const explicitProductionEnvironment = environmentFields.concat(contextFields).some(value=>/^(prod|prd|production|live|production environment|live environment)$/.test(value));
-    const productionContext = /\b(prod|prd|production|live)\b.{0,70}\b(environment|env|system|instance|server|site|tenant|database|deployment|issue|error|failure|down|unavailable|not working|broken|outage|crash|problem)\b|\b(environment|env|system|instance|server|site|tenant|database|deployment)\b.{0,70}\b(prod|prd|production|live)\b/i.test(primaryText);
-    const standaloneProdSignal = /\b(prod|prd|production|live)\b/i.test(descriptive) || /\b(production|live)\s+(?:system|instance|environment|server|site)\b/i.test(fullText);
-    if (explicitProductionEnvironment || productionContext || standaloneProdSignal) {
-      return "Production Environment / Live System";
-    }
-  }
-
-  // Match descriptive/context fields first. If those are inconclusive, use the remaining client fields.
+  const descriptive = entries.filter(([key])=>descriptiveHeader.test(key)).map(([,value])=>String(value)).join(" ").toLowerCase();
+  const context = entries.filter(([key])=>contextHeader.test(key)).map(([key,value])=>key+": "+String(value)).join(" ").toLowerCase();
+  const allFields = entries.map(([key,value])=>key+": "+String(value)).join(" ").toLowerCase();
+  const fullText = (descriptive+" "+context+" "+allFields).toLowerCase();
   const orderedRules = MODULES.filter(module=>module[0]!=="Other / Unclassified");
-  for (const text of [primaryText,fullText]){
+
+  // Manufacturing process terms take precedence over the generic word "production".
+  const manufacturingRule = MODULES.find(module=>module[0]==="Production Control / Manufacturing");
+  if (manufacturingRule && manufacturingRule[1].test(fullText)) return manufacturingRule[0];
+
+  // A specific module or support area in the ticket description beats a broad Category field.
+  const genericLabels = new Set(["Performance & Availability","General IT / Software Support","Other Enterprise Application Support"]);
+  const descriptiveSpecificMatch = orderedRules.find(([label,pattern])=>
+    !genericLabels.has(label) && pattern.test(descriptive)
+  );
+  if (descriptiveSpecificMatch) return descriptiveSpecificMatch[0];
+
+  // If the ticket text explicitly says prod/production/live, classify it as an environment incident
+  // unless the manufacturing rule above identified a production process.
+  if (/\b(prod|prd|production|live)\b/i.test(descriptive)) return "Production Environment / Live System";
+
+  // Exact values in environment/context columns are useful when the description is blank or vague.
+  const environmentFields = entries
+    .filter(([key])=>/(environment|instance|tier|system.?type|deployment.?target|server.?type)/i.test(key))
+    .map(([,value])=>String(value).trim().toLowerCase());
+  const contextFields = entries
+    .filter(([key])=>/(category|subcategory|module|source|team|assignment.?group|service|request.?type)/i.test(key))
+    .map(([,value])=>String(value).trim().toLowerCase());
+  const explicitProductionEnvironment = environmentFields.concat(contextFields)
+    .some(value=>/^(prod|prd|production|live|production environment|live environment)$/.test(value));
+  const productionContext = /\b(prod|prd|production|live)\b.{0,70}\b(environment|env|system|instance|server|site|tenant|database|deployment|issue|error|failure|down|unavailable|not working|broken|outage|crash|problem)\b|\b(environment|env|system|instance|server|site|tenant|database|deployment)\b.{0,70}\b(prod|prd|production|live)\b/i.test(context);
+  if (explicitProductionEnvironment || productionContext) return "Production Environment / Live System";
+
+  // Use a broad issue category from the description before falling back to metadata fields.
+  const descriptiveGeneralMatch = orderedRules.find(([label,pattern])=>pattern.test(descriptive));
+  if (descriptiveGeneralMatch) return descriptiveGeneralMatch[0];
+
+  // Search category, assignment group, configuration item, service instance and other client fields.
+  for (const text of [context,fullText]){
     for (const [label,pattern] of orderedRules){
       if (pattern.test(text)) return label;
     }
   }
 
-  // Explicit platform names get a useful platform-level category rather than a generic Other bucket.
   if (/\b(dynamics 365 finance|dynamics 365 f&o|d365\s?fo|d365fo|finance and operations|dynamics ax|ax 2012)\b/i.test(fullText)) return "Dynamics 365 F&O - General Support";
   if (/\b(dynamics 365|microsoft dynamics)\b/i.test(fullText)) return "Microsoft Dynamics 365 - General Support";
   if (/\b(erp|crm|enterprise application|business application|servicenow|salesforce|sap|oracle|workday)\b/i.test(fullText)) return "Other Enterprise Application Support";
