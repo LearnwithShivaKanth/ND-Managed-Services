@@ -119,15 +119,44 @@ const HEAD = {
 };
 function pick(headers, re){ return headers.find(h => re.test(String(h).trim())); }
 
+function isValidTicketDate(d){
+  return d instanceof Date && Number.isFinite(d.getTime()) && d.getFullYear() > 1900;
+}
+function makeLocalDate(y, month, day, hour=0, minute=0, second=0){
+  const d = new Date(y, month-1, day, hour, minute, second);
+  return isValidTicketDate(d) && d.getFullYear()===y && d.getMonth()===month-1 && d.getDate()===day ? d : null;
+}
+function excelSerialDate(serial){
+  // Excel serial 0/blank maps to 30-Dec-1899; it is not a valid ticket-opened date.
+  if (!Number.isFinite(serial) || serial < 1 || serial > 100000) return null;
+  const d = new Date(Date.UTC(1899, 11, 30) + Math.round(serial * 86400000));
+  return isValidTicketDate(d) ? d : null;
+}
 function parseDate(v){
-  if (v instanceof Date) return v;
-  if (typeof v === "number") return new Date(Math.round((v - 25569) * 86400000));
-  const s = String(v||"").trim(); if (!s) return null;
-  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2}))?/);
-  if (m) return new Date(+m[1], m[2]-1, +m[3], +(m[4]||0), +(m[5]||0));
-  m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})(?:\s+(\d{1,2}):(\d{2}))?/); /* dd/mm/yyyy (India) */
-  if (m) return new Date(+m[3], m[2]-1, +m[1], +(m[4]||0), +(m[5]||0));
-  const d = new Date(s); return isNaN(d) ? null : d;
+  if (v instanceof Date) return isValidTicketDate(v) ? v : null;
+  if (typeof v === "number") return excelSerialDate(v);
+
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+
+  // Handle compact YYYYMMDD values before numeric Excel serials.
+  let m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m) return makeLocalDate(+m[1], +m[2], +m[3]);
+
+  // Excel serials sometimes arrive as text rather than numbers.
+  if (/^\d+(?:\.\d+)?$/.test(s)) return excelSerialDate(Number(s));
+
+  // ISO dates and local date-times.
+  m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (m) return makeLocalDate(+m[1], +m[2], +m[3], +(m[4]||0), +(m[5]||0), +(m[6]||0));
+
+  // ServiceNow/India-style dates: dd/mm/yyyy.
+  m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (m) return makeLocalDate(+m[3], +m[2], +m[1], +(m[4]||0), +(m[5]||0), +(m[6]||0));
+
+  // Respect timezone-qualified ISO strings, while rejecting invalid/epoch dates.
+  const d = new Date(s);
+  return isValidTicketDate(d) ? d : null;
 }
 function csvParse(text){
   const out=[]; let row=[], cur="", q=false;
@@ -159,7 +188,8 @@ function build(raw){
     return {num:(c.number&&r[c.number])||("Row "+(i+1)), date:d, pri:pn?(pn>3?"P4+":"P"+pn):"Unknown", mod, iss, dow, wk:dow>4?"Weekend":"Weekday", short:r[c.short]};
   }).filter(Boolean);
   const skipped = raw.length - rows.length;
-  $("status").textContent = rows.length + " tickets loaded" + (skipped ? " (" + skipped + " skipped: unreadable date)" : "") + ".";
+  if (!rows.length) return fail("No tickets with a valid Opened date were found. Check the Opened column values.");
+  $("status").textContent = rows.length + " tickets loaded" + (skipped ? " (" + skipped + " skipped: missing or invalid Opened date)" : "") + ".";
   filter = null; $("drop").classList.add("hidden"); $("app").classList.remove("hidden"); $("exp").classList.remove("hidden");
   render();
 }
@@ -175,9 +205,12 @@ function bars(el, t, pairs, peak){
 }
 function render(){
   const all = rows, total = all.length;
-  const dates = all.map(t=>t.date), span = Math.max(1, Math.round((Math.max(...dates)-Math.min(...dates))/86400000)+1);
+  // Use whole calendar dates, not elapsed milliseconds, so times and DST cannot distort the span.
+  const dayNumbers = all.map(t=>Date.UTC(t.date.getFullYear(),t.date.getMonth(),t.date.getDate())/86400000);
+  const span = Math.max(1, Math.max(...dayNumbers)-Math.min(...dayNumbers)+1);
+  const averagePerDay = (total/span).toFixed(2);
   const byDay = count(all,t=>DAYS[t.dow]), peakDay = DAYS.reduce((a,b)=>(byDay[b]||0)>(byDay[a]||0)?b:a);
-  $("kpi").innerHTML = `<div><b>${total}</b><span>Total tickets</span></div><div><b>${(total/span).toFixed(1)}</b><span>Average per day over ${span} days</span></div><div><b>${peakDay}</b><span>Busiest day</span></div>`;
+  $("kpi").innerHTML = `<div><b>${total}</b><span>Total tickets</span></div><div><b>${averagePerDay}</b><span>Average tickets per day across ${span} calendar days</span></div><div><b>${peakDay}</b><span>Busiest day</span></div>`;
   const mc = count(all,t=>t.mod), ic = count(all,t=>t.iss);
   const modPairs = MODULES.map(m=>[m[0],mc[m[0]]||0]).concat([["Other",mc["Other"]||0]]);
   const issPairs = ISSUES.map(m=>[m[0],ic[m[0]]||0]);
