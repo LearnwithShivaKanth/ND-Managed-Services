@@ -119,7 +119,7 @@ const MODULES = [
 
   // Dynamics 365 Finance & Operations business modules.
   ["Sales & Marketing", /\b(sales order|sales quotation|quotation|quote to cash|customer order|sales agreement|sales invoice|sales return|return order|customer pricing|trade agreement|rebate|commission|prospect|lead management|sales and marketing)\b/i],
-  ["Procurement & Sourcing", /\b(purchase order|purchase requisition|purchase request|purchase agreement|procurement|sourcing|request for quotation|\brfq\b|vendor collaboration|supplier collaboration|vendor onboarding|supplier onboarding|purchase inquiry|purchasing policy|procurement category|purchase receipt|purchase line|purchase confirmation)\b/i],
+  ["Procurement & Sourcing", /\b(purchase|purchasing|procurement|sourcing|request for quotation|\brfq\b|vendor collaboration|supplier collaboration|vendor onboarding|supplier onboarding|purchasing policy|procurement category|purchase receipt|purchase line|purchase confirmation)\b/i],
   ["Accounts Payable", /\b(accounts payable|vendor invoice|supplier invoice|vendor payment|supplier payment|invoice journal|payment journal|payment proposal|payment run|three[- ]way match|invoice matching|vendor balance|supplier balance|payment advice)\b/i],
   ["Accounts Receivable & Credit", /\b(accounts receivable|customer invoice|customer payment|payment settlement|customer balance|collection letter|collections|credit limit|credit management|credit note|free text invoice|dunning|interest note)\b/i],
   ["General Ledger", /\b(general ledger|ledger journal|journal entry|journal voucher|trial balance|chart of accounts|main account|financial dimension|ledger settlement|year[- ]end close|period close|fiscal period|account structure|posting profile)\b/i],
@@ -316,9 +316,12 @@ function classifyModule(record,mapping){
     const environmentFields = entries
       .filter(([key])=>/(environment|instance|tier|system.?type|deployment.?target|server.?type)/i.test(key))
       .map(([,value])=>String(value).trim().toLowerCase());
-    const explicitProductionEnvironment = environmentFields.some(value=>/^(prod|prd|production|live|production environment|live environment)$/.test(value));
+    const contextFields = entries
+      .filter(([key])=>/(category|subcategory|module|source|team|assignment.?group|service|request.?type)/i.test(key))
+      .map(([,value])=>String(value).trim().toLowerCase());
+    const explicitProductionEnvironment = environmentFields.concat(contextFields).some(value=>/^(prod|prd|production|live|production environment|live environment)$/.test(value));
     const productionContext = /\b(prod|prd|production|live)\b.{0,70}\b(environment|env|system|instance|server|site|tenant|database|deployment|issue|error|failure|down|unavailable|not working|broken|outage|crash|problem)\b|\b(environment|env|system|instance|server|site|tenant|database|deployment)\b.{0,70}\b(prod|prd|production|live)\b/i.test(primaryText);
-    const standaloneProdSignal = /\b(prod|prd)\b/i.test(descriptive) || /\b(production|live)\s+(?:system|instance|environment|server|site)\b/i.test(fullText);
+    const standaloneProdSignal = /\b(prod|prd|production|live)\b/i.test(descriptive) || /\b(production|live)\s+(?:system|instance|environment|server|site)\b/i.test(fullText);
     if (explicitProductionEnvironment || productionContext || standaloneProdSignal) {
       return "Production Environment / Live System";
     }
