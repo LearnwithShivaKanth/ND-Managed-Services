@@ -131,7 +131,7 @@ const ISSUES = [
 const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
 /* ----------------------------------------------------------------------------------- */
 const $ = id => document.getElementById(id);
-let rows = [], filter = null;
+let rows = [], filter = null, rawRows = [], sourceHeaders = [], currentMapping = {};
 
 const FIELD_ALIASES = {
   date: ["opened", "openedat", "openedon", "openeddate", "createdat", "createdon", "createddate", "creationdate", "datecreated", "dateopened", "syscreatedon", "syscreated", "reportedat", "reportedon", "reporteddate", "submittedat", "submittedon", "loggedat", "timestamp", "incidentdate", "requestdate"],
@@ -140,8 +140,7 @@ const FIELD_ALIASES = {
   number: ["number", "ticketnumber", "ticketid", "incidentnumber", "incidentid", "requestid", "caseid", "casenumber", "recordid", "sysid", "id"],
   category: ["category", "subcategory", "module", "service", "application", "area", "component", "requesttype", "issuetype", "worktype"]
 };
-const $ = id => document.getElementById(id);
-let rows = [], filter = null, rawRows = [], sourceHeaders = [], currentMapping = {};
+let rawRows = [], sourceHeaders = [], currentMapping = {};
 
 function normalizeHeader(value){
   return String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
