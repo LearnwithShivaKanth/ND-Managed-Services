@@ -182,7 +182,7 @@ const ISSUES = [
 const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
 /* ----------------------------------------------------------------------------------- */
 const $ = id => document.getElementById(id);
-let rows = [], filter = null, rawRows = [], sourceHeaders = [], currentMapping = {}, currentDateOrder = "dmy";
+let rows = [], filter = null, rawRows = [], sourceHeaders = [], currentMapping = {}, currentDateOrder = "dmy", importCleanup = {removed:0,pivotMode:false};
 
 const FIELD_ALIASES = {
   date: ["openedat","openedon","openeddate","opendate","createdat","createdon","createddate","creationdate","datecreated","dateopened","reportedat","reportedon","reporteddate","submittedat","submittedon","raisedat","raisedon","loggedat","receivedat","incidentdate","requestdate","entrydate","eventdate","occurredat","timestamp","datetime","date"],
@@ -626,6 +626,7 @@ function setRawData(raw){
   if (!sourceHeaders.length) return fail("The file has no readable column headers. Please check that the first row contains column names.");
 
   const cleaned=cleanTicketRows(raw);
+  importCleanup=cleaned;
   rawRows=cleaned.rows;
   if(!rawRows.length) return fail("No valid ticket rows were found. Blank rows, repeated headers and export summary rows were ignored.");
 
@@ -691,7 +692,7 @@ function build(raw,mapping){
 
   const missingDates = rows.filter(t=>!t.date).length;
   $("status").textContent = rows.length + " tickets loaded" +
-    (cleaned.removed ? " (" + cleaned.removed + " blank, orphan, repeated-header or export-summary rows ignored" + (cleaned.pivotMode ? "; pivot summary rows excluded" : "") + ")" : "") +
+    (importCleanup.removed ? " (" + importCleanup.removed + " blank, orphan, repeated-header or export-summary rows ignored" + (importCleanup.pivotMode ? "; pivot summary rows excluded" : "") + ")" : "") +
     (currentMapping.date
       ? (missingDates ? "; " + missingDates + " rows have missing or unreadable dates." : ".")
       : "; no date column mapped, so date-based metrics are unavailable.") +
