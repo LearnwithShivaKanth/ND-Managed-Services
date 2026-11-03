@@ -502,7 +502,7 @@ function classifyModule(record,mapping){
 function isBlankOrPlaceholder(value){
   if(value===null || value===undefined) return true;
   const text=String(value).trim();
-  return !text || /^(?:-+|—|–|n\/?a|null|undefined|none|\\|n\/?a|\\(blank\\)|\[empty\])$/i.test(text);
+  return !text || /^(?:-+|—|–|n\/?a|null|undefined|none|\(blank\)|\[empty\])$/i.test(text);
 }
 function isRepeatedHeaderRecord(record){
   const entries=Object.entries(record||{}).filter(([,value])=>!isBlankOrPlaceholder(value));
@@ -513,9 +513,10 @@ function isRepeatedHeaderRecord(record){
 function isExportSummaryRecord(record){
   const values=Object.values(record||{}).filter(value=>!isBlankOrPlaceholder(value)).map(value=>String(value).trim());
   if(!values.length) return true;
-  const marker=/^(?:grand\s+total|total(?:\s+(?:records?|tickets?|incidents?|requests?))?|records?\s+(?:count|found)|no\s+records?\s+found|end\s+of\s+report|report\s+generated|export\s+completed|generated\s+on|page\s+\d+(?:\s+of\s+\d+)?)\s*[:=-]?$/i;
-  const hasSummary=values.some(value=>marker.test(value));
-  if(hasSummary && values.length<=3 && values.every(value=>marker.test(value)||/^[\d,.\s]+$/.test(value))) return true;
+  const marker=/^(?:grand\s+total|total(?:\s+(?:records?|tickets?|incidents?|requests?|count))?|records?\s+(?:count|found)|no\s+records?\s+found|end\s+of\s+report|report\s+generated|export\s+completed|generated\s+on|page\s+\d+(?:\s+of\s+\d+)?)\s*[:=-]?$/i;
+  const summaryValues=values.filter(value=>marker.test(value));
+  const otherValues=values.filter(value=>!marker.test(value));
+  if(summaryValues.length && otherValues.length<=5 && otherValues.every(value=>/^[\d,.\s%()-]+$/.test(value))) return true;
   if(values.length===1 && /^(?:row|record)\s*#?\s*\d+$/i.test(values[0])) return true;
   return false;
 }
@@ -533,26 +534,31 @@ function isOrphanTicketRecord(record){
   const dateOrder=mapping.date?inferDateOrder([record[mapping.date]]):"dmy";
   const dateValue=mapping.date?parseDate(record[mapping.date],dateOrder):null;
 
-  // A real ticket ID or an actual subject/description is sufficient to keep a ticket.
+  // A genuine ticket number or a populated subject/description is a strong ticket anchor.
   if(idValue && !isPlaceholderTicketIdentity(record,mapping.number)) return false;
   if(subjectValue) return false;
 
-  // A valid opened/created date is useful evidence, but a date alone is not a ticket.
+  const metadataHeader=/(?:^|[ _-])(?:assigned\s*to|assignee|owner|responsible(?:\s*person)?|requested\s*by|requested\s*for|requester|submitter|caller|contact|email|phone|created\s*by|opened\s*by|updated\s*by|modified\s*by|resolved\s*by|closed\s*by|last\s*updated\s*by|assignment\s*group|assigned\s*group|group|team|organization|organisation|company|department|approver)(?:$|[ _-])/i;
+  const weakHeader=/^(?:status|state|priority|severity|urgency|category|subcategory|type|source|service|serviceinstance|module|workflow|impact|risk|group|team|organization|organisation|company|department)$/i;
   const nonEmptyEntries=headers
     .map(header=>[header,String(record[header]??"").trim()])
     .filter(([,value])=>!isBlankOrPlaceholder(value));
-  const metadataHeader=/(?:^|[ _-])(?:assigned\s*to|assignee|owner|responsible(?:\s*person)?|requested\s*by|requested\s*for|requester|submitter|caller|contact|email|phone|created\s*by|opened\s*by|updated\s*by|modified\s*by|resolved\s*by|closed\s*by|last\s*updated\s*by|assignment\s*group|assigned\s*group|group|team|organization|organisation|company|department|approver)(?:$|[ _-])/i;
-  const businessEntries=nonEmptyEntries.filter(([header])=>!metadataHeader.test(header));
-  const hasTicketHeader=businessEntries.some(([header])=>
-    /(?:ticket|incident|case|request|task|record|sys)\s*(?:number|no|id|key)?|^(?:number|no|id|sysid|subject|summary|title|short\s*desc(?:ription)?|description|details|problem|issue|priority|severity|status|state|category|subcategory|service|opened|created|reported|raised|submitted|logged|received|date|datetime|timestamp)$/i.test(header.trim())
+  const businessEntries=nonEmptyEntries.filter(([header])=>
+    !metadataHeader.test(header) &&
+    header!==mapping.number &&
+    header!==mapping.date
   );
-  if(hasTicketHeader) return false;
+  const substantiveEntries=businessEntries.filter(([header])=>
+    !weakHeader.test(normalizeHeader(header))
+  );
+
+  // A valid opened/created date plus another non-owner ticket attribute is sufficient.
   if(dateValue && businessEntries.length>=1) return false;
 
-  // Preserve custom client schemas with multiple meaningful business fields,
-  // or a single long free-text field. Do not treat owner/requester/audit metadata alone as a ticket.
-  if(businessEntries.length>=2) return false;
-  if(businessEntries.length===1 && businessEntries[0][1].length>=24) return false;
+  // Keep unknown client schemas when they provide multiple meaningful business fields,
+  // or one substantial free-text field. Metadata-only and status-only rows are orphans.
+  if(substantiveEntries.length>=2) return false;
+  if(substantiveEntries.length===1 && substantiveEntries[0][1].length>=24) return false;
 
   return true;
 }
@@ -565,8 +571,11 @@ function cleanTicketRows(raw){
       continue;
     }
     const hasMeaningfulValue=Object.values(record).some(value=>!isBlankOrPlaceholder(value));
-    if(!hasMeaningfulValue || isRepeatedHeaderRecord(record) || isExportSummaryRecord(record) ||
-       isPlaceholderTicketIdentity(record,findColumn(Object.keys(record),FIELD_ALIASES.number)) ||
+    const numberColumn=findColumn(Object.keys(record),FIELD_ALIASES.number);
+    if(!hasMeaningfulValue ||
+       isRepeatedHeaderRecord(record) ||
+       isExportSummaryRecord(record) ||
+       isPlaceholderTicketIdentity(record,numberColumn) ||
        isOrphanTicketRecord(record)){
       removed++;
       continue;
