@@ -41,7 +41,7 @@ main{padding:0 clamp(16px,4vw,40px) 40px;max-width:1280px;margin:0 auto}
 .pri button{flex:1;padding:16px 8px;text-align:center;border-radius:8px}
 .pri b{display:block;font-size:1.9rem;line-height:1.1}
 .pri span{font-size:.8rem;color:var(--mute)}
-.pri .p1 b{color:var(--p1)}.pri .p2 b{color:var(--p2)}.pri .p3 b{color:var(--p3)}
+.pri .p1 b{color:var(--p1)}.pri .p2 b{color:var(--p2)}.pri .p3 b{color:var(--p3)}.pri .p4 b{color:var(--mute)}
 .pri button.sel,.split button.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
 .split{display:flex;gap:12px}
 .split button{flex:1;padding:16px 8px;text-align:center;border-radius:8px}
@@ -90,6 +90,7 @@ th{color:var(--mute);font-weight:500;white-space:nowrap}
       <div class="mapping-field"><label for="map-text">Subject / Description</label><select id="map-text" class="map-select"></select></div>
       <div class="mapping-field"><label for="map-number">Ticket ID / Number</label><select id="map-number" class="map-select"></select></div>
       <div class="mapping-field"><label for="map-category">Category / Module</label><select id="map-category" class="map-select"></select></div>
+      <div class="mapping-field"><label for="map-assigned">Assigned To / Owner</label><select id="map-assigned" class="map-select"></select></div>
     </div>
     <p class="note" id="mapping-note"></p>
   </section>
@@ -105,7 +106,7 @@ th{color:var(--mute);font-weight:500;white-space:nowrap}
     </div>
     <section class="tile">
       <div class="tbar"><h2 id="tt" style="margin:0">Tickets</h2><button id="clear" class="hidden">Clear filter</button></div>
-      <div class="wrap"><table><thead><tr><th>Number / ID</th><th>Opened / Created</th><th>Priority</th><th>Categories</th><th>Short description</th></tr></thead><tbody id="tb"></tbody></table></div>
+      <div class="wrap"><table><thead><tr><th>Number / ID</th><th>Opened / Created</th><th>Priority</th><th>Categories</th><th>Assigned To</th><th>Short description</th></tr></thead><tbody id="tb"></tbody></table></div>
       <p class="note" id="more"></p>
     </section>
   </div>
@@ -180,45 +181,162 @@ const ISSUES = [
 const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
 /* ----------------------------------------------------------------------------------- */
 const $ = id => document.getElementById(id);
-let rows = [], filter = null, rawRows = [], sourceHeaders = [], currentMapping = {};
+let rows = [], filter = null, rawRows = [], sourceHeaders = [], currentMapping = {}, currentDateOrder = "dmy";
 
 const FIELD_ALIASES = {
-  date: ["opened", "openedat", "openedon", "openeddate", "createdat", "createdon", "createddate", "creationdate", "datecreated", "dateopened", "syscreatedon", "syscreated", "reportedat", "reportedon", "reporteddate", "submittedat", "submittedon", "loggedat", "timestamp", "incidentdate", "requestdate"],
-  priority: ["priority", "ticketpriority", "prioritylevel", "severity", "urgency"],
-  text: ["shortdescription", "shortdesc", "subject", "summary", "title", "description", "details", "issuedescription", "problem", "requestdescription", "workdescription", "taskdescription", "comments", "notes"],
-  number: ["number", "ticketnumber", "ticketid", "incidentnumber", "incidentid", "requestid", "caseid", "casenumber", "recordid", "sysid", "id"],
-  category: ["category", "subcategory", "module", "service", "application", "area", "component", "requesttype", "issuetype", "worktype"]
+  date: ["openedat","openedon","openeddate","opendate","createdat","createdon","createddate","creationdate","datecreated","dateopened","reportedat","reportedon","reporteddate","submittedat","submittedon","raisedat","raisedon","loggedat","receivedat","incidentdate","requestdate","entrydate","eventdate","occurredat","timestamp","datetime","date"],
+  priority: ["priority","ticketpriority","prioritylevel","severity","urgency","impactlevel"],
+  text: ["shortdescription","shortdesc","subject","summary","title","description","issuedescription","incidentdescription","requestdescription","workdescription","taskdescription","issuetitle","requesttitle","problemdescription","shorttext","briefdescription"],
+  number: ["number","ticketnumber","ticketid","incidentnumber","incidentid","requestid","caseid","casenumber","recordid","sysid","id"],
+  category: ["category","subcategory","module","service","application","area","component","requesttype","issuetype","worktype"],
+  assigned: ["assignedto","assignedtouser","assigneduser","assignee","owner","responsibleperson","assignedgroup","assignmentgroup"]
 };
-
 
 function normalizeHeader(value){
   return String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
+function headerTokens(value){
+  return String(value ?? "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+function containsTokenPhrase(header, phrase){
+  const tokens=headerTokens(header), target=headerTokens(phrase);
+  if (!target.length || target.length>tokens.length) return false;
+  for(let i=0;i<=tokens.length-target.length;i++){
+    if(target.every((token,j)=>tokens[i+j]===token)) return true;
+  }
+  return false;
+}
 function findColumn(headers, aliases){
-  const normalized = headers.map(h=>({name:h,norm:normalizeHeader(h)}));
-  for (const alias of aliases){
-    const found = normalized.find(h=>h.norm===alias);
-    if (found) return found.name;
+  // Exact normalized matches first, then complete token phrases. Never use arbitrary substrings:
+  // e.g. "Entitlement" must not accidentally match the word "Title".
+  const normalized=headers.map(name=>({name,norm:normalizeHeader(name)}));
+  for(const alias of aliases){
+    const found=normalized.find(h=>h.norm===normalizeHeader(alias));
+    if(found) return found.name;
   }
-  for (const alias of aliases){
-    if (alias.length < 5) continue;
-    const found = normalized.find(h=>h.norm.startsWith(alias));
-    if (found) return found.name;
-  }
-  for (const alias of aliases){
-    if (alias.length < 6) continue;
-    const found = normalized.find(h=>h.norm.includes(alias));
-    if (found) return found.name;
+  for(const alias of aliases){
+    const found=normalized.find(h=>containsTokenPhrase(h.name,alias));
+    if(found) return found.name;
   }
   return "";
 }
-function detectMapping(headers){
+function dateHeaderScore(header){
+  const tokens=headerTokens(header);
+  const norm=normalizeHeader(header);
+  if(!tokens.length) return -1;
+  if (/(created|opened|reported|updated|resolved|closed|requested|assigned|submitted|raised|logged|completed|approved|modified|entered)by$/.test(norm)) return -1;
+  if (/(due|target|deadline|birth|dob|expiry|expiration|reminder)/.test(norm)) return -1;
+  const has=(...terms)=>terms.some(term=>tokens.includes(term));
+  if (has("opened","open") && has("date","at","on","time")) return 130;
+  if (has("created","creation") && has("date","at","on","time")) return 125;
+  if (has("opened","open")) return 115;
+  if (has("created","creation")) return 110;
+  if (has("reported","raised","submitted","logged","received","occurred","recorded","entered") && has("date","at","on","time")) return 105;
+  if (has("reported","raised","submitted","logged","received","occurred","recorded","entered")) return 95;
+  if (has("incident","request","ticket","case") && has("date","at","on","time")) return 85;
+  if (has("date","datetime","timestamp")) return 75;
+  if (has("resolved","closed","completed","updated","modified") && has("date","at","on","time")) return 55;
+  if (has("date","datetime","timestamp","time")) return 35;
+  return -1;
+}
+function isValidTicketDate(d){
+  return d instanceof Date && Number.isFinite(d.getTime()) && d.getFullYear() > 1900 && d.getFullYear() < 2200;
+}
+function makeLocalDate(y, month, day, hour=0, minute=0, second=0){
+  const d = new Date(y, month-1, day, hour, minute, second);
+  return isValidTicketDate(d) && d.getFullYear()===y && d.getMonth()===month-1 && d.getDate()===day ? d : null;
+}
+function excelSerialDate(serial){
+  if (!Number.isFinite(serial) || serial < 1 || serial > 100000) return null;
+  const utc = new Date(Date.UTC(1899,11,30) + Math.round(serial * 86400000));
+  return makeLocalDate(utc.getUTCFullYear(),utc.getUTCMonth()+1,utc.getUTCDate(),utc.getUTCHours(),utc.getUTCMinutes(),utc.getUTCSeconds());
+}
+function inferDateOrder(values){
+  let dayFirst=0, monthFirst=0;
+  for(const value of values.slice(0,200)){
+    const s=String(value ?? "").trim();
+    const m=s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4}|\d{2})(?:\D|$)/);
+    if(!m) continue;
+    const first=+m[1], second=+m[2];
+    if(first>12 && second<=12) dayFirst++;
+    else if(second>12 && first<=12) monthFirst++;
+  }
+  if(monthFirst>dayFirst) return "mdy";
+  return "dmy"; // India-friendly default when the file itself is ambiguous.
+}
+function parseDate(v, order="dmy"){
+  if (v instanceof Date) return isValidTicketDate(v) ? v : null;
+  if (typeof v === "number") return excelSerialDate(v);
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+
+  // Unix epoch milliseconds/seconds are accepted only when the value is unmistakably epoch-sized.
+  if (/^\d{13}$/.test(s)) {
+    const d=new Date(Number(s)); return isValidTicketDate(d)?d:null;
+  }
+  if (/^\d{10}$/.test(s)) {
+    const d=new Date(Number(s)*1000); return isValidTicketDate(d)?d:null;
+  }
+
+  let m=s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if(m) return makeLocalDate(+m[1],+m[2],+m[3]);
+
+  // Timezone-qualified ISO timestamps should be interpreted as actual instants.
+  if (/^\d{4}-\d{1,2}-\d{1,2}T.*(?:Z|[+-]\d{2}:?\d{2})$/i.test(s)){
+    const d=new Date(s); return isValidTicketDate(d)?d:null;
+  }
+  m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(?:\s*(AM|PM))?)?/i);
+  if(m) return makeLocalDate(+m[1],+m[2],+m[3],+(m[4]||0),+(m[5]||0),+(m[6]||0));
+
+  m=s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4}|\d{2})(?:[ T,]+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?\s*(AM|PM)?)?/i);
+  if(m){
+    const first=+m[1], second=+m[2], yearRaw=+m[3];
+    let y=yearRaw<100?(yearRaw>=70?1900+yearRaw:2000+yearRaw):yearRaw;
+    let month,day;
+    if(first>12){day=first;month=second;}
+    else if(second>12){month=first;day=second;}
+    else if(order==="mdy"){month=first;day=second;}
+    else {day=first;month=second;}
+    let hour=+(m[4]||0);
+    const ampm=(m[7]||"").toUpperCase();
+    if(ampm==="PM" && hour<12) hour+=12;
+    if(ampm==="AM" && hour===12) hour=0;
+    return makeLocalDate(y,month,day,hour,+(m[5]||0),+(m[6]||0));
+  }
+
+  const d=new Date(s);
+  return isValidTicketDate(d)?d:null;
+}
+function detectDateColumn(headers,rawRows){
+  const candidates=headers.map(name=>{
+    const score=dateHeaderScore(name);
+    if(score<0) return null;
+    const values=(rawRows||[]).slice(0,100).map(row=>row[name]).filter(v=>v!==null&&v!==undefined&&String(v).trim()!=="");
+    const order=inferDateOrder(values);
+    const valid=values.filter(v=>parseDate(v,order)).length;
+    const ratio=values.length?valid/values.length:0;
+    return {name,score:score+ratio*30,ratio,order,values};
+  }).filter(Boolean).sort((a,b)=>b.score-a.score);
+  if(candidates.length && candidates[0].ratio>=0.35) return candidates[0].name;
+
+  // Fall back to columns explicitly named with a date/time token when sample values are parseable.
+  const fallback=headers.map(name=>{
+    const tokens=headerTokens(name);
+    if(!tokens.some(t=>["date","datetime","timestamp","time"].includes(t))) return null;
+    const values=(rawRows||[]).slice(0,100).map(row=>row[name]).filter(v=>v!==null&&v!==undefined&&String(v).trim()!=="");
+    const ratio=values.length?values.filter(v=>parseDate(v,inferDateOrder(values))).length/values.length:0;
+    return ratio>=0.5?{name,score:ratio*20}:null;
+  }).filter(Boolean).sort((a,b)=>b.score-a.score);
+  return fallback[0]?.name || "";
+}
+function detectMapping(headers,rawRows=[]){
   return {
-    date:findColumn(headers,FIELD_ALIASES.date),
+    date:detectDateColumn(headers,rawRows),
     priority:findColumn(headers,FIELD_ALIASES.priority),
     text:findColumn(headers,FIELD_ALIASES.text),
     number:findColumn(headers,FIELD_ALIASES.number),
-    category:findColumn(headers,FIELD_ALIASES.category)
+    category:findColumn(headers,FIELD_ALIASES.category),
+    assigned:findColumn(headers,FIELD_ALIASES.assigned)
   };
 }
 function populateMappingSelect(id, headers, selected){
@@ -242,50 +360,20 @@ function readMapping(){
     priority:$("map-priority").value,
     text:$("map-text").value,
     number:$("map-number").value,
-    category:$("map-category").value
+    category:$("map-category").value,
+    assigned:$("map-assigned").value
   };
 }
-function isValidTicketDate(d){
-  return d instanceof Date && Number.isFinite(d.getTime()) && d.getFullYear() > 1900 && d.getFullYear() < 2200;
-}
-function makeLocalDate(y, month, day, hour=0, minute=0, second=0){
-  const d = new Date(y, month-1, day, hour, minute, second);
-  return isValidTicketDate(d) && d.getFullYear()===y && d.getMonth()===month-1 && d.getDate()===day ? d : null;
-}
-function excelSerialDate(serial){
-  if (!Number.isFinite(serial) || serial < 1 || serial > 100000) return null;
-  const utc = new Date(Date.UTC(1899,11,30) + Math.round(serial * 86400000));
-  return makeLocalDate(utc.getUTCFullYear(),utc.getUTCMonth()+1,utc.getUTCDate(),utc.getUTCHours(),utc.getUTCMinutes(),utc.getUTCSeconds());
-}
-function parseDate(v){
-  if (v instanceof Date) return isValidTicketDate(v) ? v : null;
-  if (typeof v === "number") return excelSerialDate(v);
-  const s = String(v ?? "").trim();
-  if (!s) return null;
-
-  let m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
-  if (m) return makeLocalDate(+m[1],+m[2],+m[3]);
-  if (/^\d+(?:\.\d+)?$/.test(s)) return excelSerialDate(Number(s));
-
-  m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
-  if (m) return makeLocalDate(+m[1],+m[2],+m[3],+(m[4]||0),+(m[5]||0),+(m[6]||0));
-
-  m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
-  if (m) return makeLocalDate(+m[3],+m[2],+m[1],+(m[4]||0),+(m[5]||0),+(m[6]||0));
-
-  const d = new Date(s);
-  return isValidTicketDate(d) ? d : null;
-}
 function parsePriority(value){
-  const s = String(value ?? "").trim();
-  if (!s) return "Not provided";
-  if (/\b(?:p\s?1|priority\s?1|sev(?:erity)?\s?1|critical|urgent)\b/i.test(s)) return "P1";
-  if (/\b(?:p\s?2|priority\s?2|sev(?:erity)?\s?2|high)\b/i.test(s)) return "P2";
-  if (/\b(?:p\s?3|priority\s?3|sev(?:erity)?\s?3|moderate|medium)\b/i.test(s)) return "P3";
-  if (/\b(?:p\s?4|priority\s?4|sev(?:erity)?\s?4|low|minor)\b/i.test(s)) return "P4+";
-  const numeric = s.match(/^\s*([1-4])(?:\s|[-:.]|$)/);
-  if (numeric) return Number(numeric[1])===1?"P1":Number(numeric[1])===2?"P2":Number(numeric[1])===3?"P3":"P4+";
-  return s;
+  const s=String(value ?? "").trim().toLowerCase();
+  if(!s) return "";
+  if(/\b(?:p\s?1|priority\s?1|sev(?:erity)?\s?1|critical|urgent|very high)\b/.test(s)) return "P1";
+  if(/\b(?:p\s?2|priority\s?2|sev(?:erity)?\s?2|high)\b/.test(s)) return "P2";
+  if(/\b(?:p\s?3|priority\s?3|sev(?:erity)?\s?3|moderate|medium)\b/.test(s)) return "P3";
+  if(/\b(?:p\s?4|priority\s?4|sev(?:erity)?\s?4|low|minor|lowest)\b/.test(s)) return "P4";
+  const numeric=s.match(/^\s*([1-4])(?:\s|[-:.]|$)/);
+  if(numeric) return "P"+numeric[1];
+  return "";
 }
 function csvParse(text){
   const out=[]; let row=[], cur="", q=false;
@@ -365,12 +453,13 @@ function setRawData(raw){
   sourceHeaders = Object.keys(raw[0] || {});
   if (!sourceHeaders.length) return fail("The file has no readable column headers. Please check that the first row contains column names.");
 
-  currentMapping = detectMapping(sourceHeaders);
+  currentMapping = detectMapping(sourceHeaders,rawRows);
   populateMappingSelect("map-date",sourceHeaders,currentMapping.date);
   populateMappingSelect("map-priority",sourceHeaders,currentMapping.priority);
   populateMappingSelect("map-text",sourceHeaders,currentMapping.text);
   populateMappingSelect("map-number",sourceHeaders,currentMapping.number);
   populateMappingSelect("map-category",sourceHeaders,currentMapping.category);
+  populateMappingSelect("map-assigned",sourceHeaders,currentMapping.assigned);
 
   $("mapping").classList.remove("hidden");
   $("drop").classList.add("hidden");
@@ -379,21 +468,26 @@ function setRawData(raw){
   $("mapping-note").textContent = "Detected " + sourceHeaders.length + " columns. " +
     (currentMapping.date ? "Date: " + currentMapping.date + ". " : "No date field detected. ") +
     (currentMapping.priority ? "Priority: " + currentMapping.priority + ". " : "Priority is optional and was not detected. ") +
-    (currentMapping.text ? "Description: " + currentMapping.text + "." : "No subject/description field detected; the dashboard will still analyse available columns.");
+    (currentMapping.text ? "Description: " + currentMapping.text + ". " : "No subject/description field detected; Short description will be blank. ") +
+    (currentMapping.assigned ? "Assigned To: " + currentMapping.assigned + "." : "No Assigned To field detected.");
   build(rawRows,currentMapping);
 }
 function build(raw,mapping){
   if (!raw || !raw.length) return fail("No rows found in that file.");
-  currentMapping = mapping || detectMapping(Object.keys(raw[0] || {}));
+  currentMapping = mapping || detectMapping(Object.keys(raw[0] || {}),raw);
+  currentDateOrder = currentMapping.date
+    ? inferDateOrder(raw.map(row=>row[currentMapping.date]).filter(v=>v!==null&&v!==undefined&&String(v).trim()!==""))
+    : "dmy";
 
   let invalidDates = 0;
   rows = raw.map((r,i)=>{
-    const dateValue = currentMapping.date ? parseDate(r[currentMapping.date]) : null;
+    const dateValue = currentMapping.date ? parseDate(r[currentMapping.date],currentDateOrder) : null;
     if (currentMapping.date && !dateValue) invalidDates++;
 
-    const priority = currentMapping.priority ? parsePriority(r[currentMapping.priority]) : "Not provided";
+    const priority = currentMapping.priority ? parsePriority(r[currentMapping.priority]) : "";
     const displayText = currentMapping.text ? String(r[currentMapping.text] ?? "").trim() : "";
     const categoryValue = currentMapping.category ? String(r[currentMapping.category] ?? "").trim() : "";
+    const assignedValue = currentMapping.assigned ? String(r[currentMapping.assigned] ?? "").trim() : "";
 
     // Read subject, descriptions, notes, category, assignment group and other client fields.
     const mod = classifyModule(r,currentMapping);
@@ -409,7 +503,8 @@ function build(raw,mapping){
       iss:issues,
       dow:dow,
       wk:dow===null?null:(dow>4?"Weekend":"Weekday"),
-      short:displayText || categoryValue || "—"
+      short:displayText,
+      assigned:assignedValue
     };
   });
 
@@ -464,16 +559,12 @@ function render(){
   bars($("m1"),"mod",modulePairs,false);
   bars($("m2"),"iss",issuePairs,false);
 
-  const priorityCounts = count(all,t=>t.pri);
-  const priorityOrder = ["P1","P2","P3","P4+","Not provided"];
-  const priorityKeys = priorityOrder.filter(p=>priorityCounts[p]).concat(
-    Object.keys(priorityCounts).filter(p=>priorityOrder.indexOf(p)<0).sort()
-  );
-  const priorityLabels = {P1:"Critical",P2:"High",P3:"Moderate","P4+":"Low / planning","Not provided":"Not provided"};
-  $("pri").innerHTML = priorityKeys.map(p=>{
-    const cls = p==="P1"?"p1":p==="P2"?"p2":"p3";
-    const label = priorityLabels[p] || p;
-    return "<button class='"+cls+(isSel("pri",p)?" sel":"")+"' data-t='pri' data-v='"+String(p).replace(/'/g,"&#39;")+"'><b>"+priorityCounts[p]+"</b><span>"+p+" "+label+"</span></button>";
+  const priorityCounts = {P1:0,P2:0,P3:0,P4:0};
+  all.forEach(ticket=>{ if(Object.prototype.hasOwnProperty.call(priorityCounts,ticket.pri)) priorityCounts[ticket.pri]++; });
+  const priorityLabels = {P1:"Critical",P2:"High",P3:"Moderate",P4:"Low"};
+  $("pri").innerHTML = ["P1","P2","P3","P4"].map(p=>{
+    const cls=p.toLowerCase();
+    return "<button class='"+cls+(isSel("pri",p)?" sel":"")+"' data-t='pri' data-v='"+p+"'><b>"+priorityCounts[p]+"</b><span>"+p+" "+priorityLabels[p]+"</span></button>";
   }).join("");
 
   if (dated.length){
@@ -493,7 +584,7 @@ function render(){
   $("clear").classList.toggle("hidden",!filter);
   const esc = s=>String(s ?? "").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
   $("tb").innerHTML = list.slice(0,200).map(t=>
-    "<tr><td>"+esc(t.num)+"</td><td>"+(t.date ? esc(t.date.toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"})) : "—")+"</td><td>"+esc(t.pri)+"</td><td><span class='tag'>"+esc(t.mod)+"</span>"+t.iss.map(i=>"<span class='tag'>"+esc(i)+"</span>").join("")+"</td><td>"+esc(t.short)+"</td></tr>"
+    "<tr><td>"+esc(t.num)+"</td><td>"+(t.date ? esc(t.date.toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"})) : "—")+"</td><td>"+(t.pri || "—")+"</td><td><span class='tag'>"+esc(t.mod)+"</span>"+t.iss.map(i=>"<span class='tag'>"+esc(i)+"</span>").join("")+"</td><td>"+esc(t.assigned)+"</td><td>"+esc(t.short)+"</td></tr>"
   ).join("");
   $("more").textContent = list.length>200 ? "Showing the latest 200. Use Export filtered CSV for the full list." : "";
   window.__list = list;
