@@ -107,7 +107,7 @@ th{color:var(--mute);font-weight:500;white-space:nowrap}
     </div>
     <section class="tile">
       <div class="tbar"><h2 id="tt" style="margin:0">Tickets</h2><button id="clear" class="hidden">Clear filter</button></div>
-      <div class="wrap"><table><thead><tr><th>Number / ID</th><th>Opened / Created</th><th>Priority</th><th>Categories</th><th>Assigned To</th><th>Short description</th></tr></thead><tbody id="tb"></tbody></table></div>
+      <div class="wrap"><table><thead><tr><th>Number / ID</th><th>Opened / Created</th><th>Priority</th><th>Categories</th><th>Assigned To</th><th>Subject / Description</th></tr></thead><tbody id="tb"></tbody></table></div>
       <p class="note" id="more"></p>
     </section>
   </div>
@@ -691,7 +691,7 @@ document.addEventListener("click", e=>{
 $("clear").onclick = ()=>{ filter=null; render(); };
 $("exp").onclick = ()=>{
   const q = s=>'"'+String(s).replace(/"/g,'""')+'"';
-  const csv = ["Number,Opened,Priority,Area of work,Issue type,Day,Short description"].concat(window.__list.map(t=>[t.num,t.date ? t.date.toISOString() : "",t.pri,t.mod,t.iss.join("; "),t.dow===null ? "" : DAYS[t.dow],t.short].map(q).join(","))).join("\n");
+  const csv = ["Number,Opened,Priority,Area of work,Issue type,Day,Assigned To,Subject / Description"].concat(window.__list.map(t=>[t.num,t.date ? t.date.toISOString() : "",t.pri,t.mod,t.iss.join("; "),t.dow===null ? "" : DAYS[t.dow],t.assigned,t.short].map(q).join(","))).join("\n");
   const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.download = "tickets-filtered.csv"; a.click();
 };
 function readFile(f){
