@@ -534,8 +534,7 @@ function isOrphanTicketRecord(record){
   const dateOrder=mapping.date?inferDateOrder([record[mapping.date]]):"dmy";
   const dateValue=mapping.date?parseDate(record[mapping.date],dateOrder):null;
 
-  // A genuine ticket number or a populated subject/description is a strong ticket anchor.
-  if(idValue && !isPlaceholderTicketIdentity(record,mapping.number)) return false;
+  // A populated subject/title/description is a strong ticket anchor.
   if(subjectValue) return false;
 
   const metadataHeader=/(?:^|[ _-])(?:assigned\s*to|assignee|owner|responsible(?:\s*person)?|requested\s*by|requested\s*for|requester|submitter|caller|contact|email|phone|created\s*by|opened\s*by|updated\s*by|modified\s*by|resolved\s*by|closed\s*by|last\s*updated\s*by|assignment\s*group|assigned\s*group|group|team|organization|organisation|company|department|approver)(?:$|[ _-])/i;
@@ -552,11 +551,14 @@ function isOrphanTicketRecord(record){
     !weakHeader.test(normalizeHeader(header))
   );
 
-  // A valid opened/created date plus another non-owner ticket attribute is sufficient.
-  if(dateValue && businessEntries.length>=1) return false;
+  // ID + a real date, or ID + at least one non-owner field, is a plausible ticket.
+  if(dateValue && (idValue || businessEntries.length>=1)) return false;
+  if(idValue && !isPlaceholderTicketIdentity(record,mapping.number)){
+    return businessEntries.length===0;
+  }
 
-  // Keep unknown client schemas when they provide multiple meaningful business fields,
-  // or one substantial free-text field. Metadata-only and status-only rows are orphans.
+  // Preserve custom client schemas with multiple meaningful business fields,
+  // or one substantial narrative field, even when no standard ID/description exists.
   if(substantiveEntries.length>=2) return false;
   if(substantiveEntries.length===1 && substantiveEntries[0][1].length>=24) return false;
 
