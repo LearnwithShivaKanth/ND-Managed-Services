@@ -140,7 +140,7 @@ const FIELD_ALIASES = {
   number: ["number", "ticketnumber", "ticketid", "incidentnumber", "incidentid", "requestid", "caseid", "casenumber", "recordid", "sysid", "id"],
   category: ["category", "subcategory", "module", "service", "application", "area", "component", "requesttype", "issuetype", "worktype"]
 };
-let rawRows = [], sourceHeaders = [], currentMapping = {};
+
 
 function normalizeHeader(value){
   return String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
