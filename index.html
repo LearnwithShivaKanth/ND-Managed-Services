@@ -97,8 +97,8 @@ th{color:var(--mute);font-weight:500;white-space:nowrap}
   <div id="app" class="hidden">
     <div class="kpi" id="kpi"></div>
     <div class="grid">
-      <section class="tile wide"><h2>Tickets by area of work and issue type</h2><div id="mods" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));column-gap:24px"></div>
-        <p class="note">Issue types (Slowness, Access) can overlap with an area of work, so area-of-work and issue totals will not add up to the same number.</p></section>
+      <section class="tile wide"><h2>Tickets by module / support area and issue type</h2><div id="mods" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));column-gap:24px"></div>
+        <p class="note">Each ticket is assigned to its best-fit business module or technical support area using descriptive fields and other export columns. Issue types can overlap with the module category.</p></section>
       <section class="tile"><h2>Tickets by priority</h2><div class="pri" id="pri"></div></section>
       <section class="tile"><h2>Weekdays vs weekends</h2><div class="split" id="split"></div></section>
       <section class="tile wide"><h2>Tickets by day of the week</h2><div id="days"></div></section>
@@ -113,16 +113,60 @@ th{color:var(--mute);font-weight:500;white-space:nowrap}
 <script>
 /* ---- EDIT HERE: keyword rules that decide a ticket's area of work. First match wins. ---- */
 const MODULES = [
-  ["Sales", /\b(sales|sales order|quotation|quote|customer order|invoice request|so\b)/i],
-  ["Purchase / Production", /\b(purchase|po\b|procure|vendor|production|manufactur|bom|work order|prod order|supplier)/i],
-  ["UAT", /\b(uat|user acceptance|test case|test env|testing)/i],
-  ["POS", /\b(pos\b|point of sale|till|store register|retail terminal)/i],
-  ["General Ledger", /\b(general ledger|gl\b|journal|ledger|trial balance|chart of accounts|posting)/i],
-  ["Accounts Receivable", /\b(receivable|a\/r|\bar\b|customer payment|collections|credit note)/i],
-  ["Accounts Payable", /\b(payable|a\/p|\bap\b|vendor payment|vendor invoice|payment run)/i],
-  ["Product Information Mgmt", /\b(pim\b|product information|item master|product master|sku|item attribute|product catalog)/i],
-  ["Warehouse Management", /\b(warehouse|wms|inventory|stock|picking|putaway|bin\b|goods receipt|grn|dispatch)/i],
-  ["Human Resources", /\b(hr\b|human resource|payroll|leave|employee|attendance|timesheet|salary)/i]
+  // Explicit environment classification is handled first in classifyModule().
+  ["Production Control / Manufacturing", /\b(production order|prod(?:uction)? order|batch order|manufactur(?:e|ing|ing order)|shop floor|production floor|route card|job card|report as finished|\braf\b|material consumption|bom\b|bill of materials|production scheduling|production control|co[- ]?product|by[- ]?product)\b/i],
+  ["Development / UAT / Test Environment", /\b(uat|user acceptance|test environment|testing environment|sandbox|development environment|dev environment|staging environment|pre[- ]?prod(?:uction)?|quality environment|qa environment|test case|test execution)\b/i],
+
+  // Dynamics 365 Finance & Operations business modules.
+  ["Sales & Marketing", /\b(sales order|sales quotation|quotation|quote to cash|customer order|sales agreement|sales invoice|sales return|return order|customer pricing|trade agreement|rebate|commission|prospect|lead management|sales and marketing)\b/i],
+  ["Procurement & Sourcing", /\b(purchase order|purchase requisition|purchase request|purchase agreement|procurement|sourcing|request for quotation|\brfq\b|vendor collaboration|supplier collaboration|vendor onboarding|supplier onboarding|purchase inquiry|purchasing policy|procurement category|purchase receipt|purchase line|purchase confirmation)\b/i],
+  ["Accounts Payable", /\b(accounts payable|vendor invoice|supplier invoice|vendor payment|supplier payment|invoice journal|payment journal|payment proposal|payment run|three[- ]way match|invoice matching|vendor balance|supplier balance|payment advice)\b/i],
+  ["Accounts Receivable & Credit", /\b(accounts receivable|customer invoice|customer payment|payment settlement|customer balance|collection letter|collections|credit limit|credit management|credit note|free text invoice|dunning|interest note)\b/i],
+  ["General Ledger", /\b(general ledger|ledger journal|journal entry|journal voucher|trial balance|chart of accounts|main account|financial dimension|ledger settlement|year[- ]end close|period close|fiscal period|account structure|posting profile)\b/i],
+  ["Cash & Bank Management", /\b(cash and bank|bank reconciliation|bank statement|bank account|cash flow|cash forecast|deposit slip|payment reconciliation|positive pay|bank management)\b/i],
+  ["Fixed Assets", /\b(fixed asset|asset depreciation|depreciation book|asset acquisition|asset disposal|asset transfer|asset proposal)\b/i],
+  ["Budgeting & Budget Control", /\b(budget plan|budget register|budget control|budget reservation|budget transfer|budget planning|original budget|budget funds)\b/i],
+  ["Tax & GST", /\b(gst|goods and services tax|vat|withholding tax|tds\b|tax code|tax group|tax calculation|tax settlement|e[- ]?way bill|e[- ]?invoice|electronic invoice|invoice registration)\b/i],
+  ["Cost Accounting & Cost Management", /\b(cost accounting|cost management|cost allocation|cost center|cost centre|cost distribution|cost roll[- ]?up|item cost|standard cost|inventory closing|cost variance)\b/i],
+  ["Project Management & Accounting", /\b(project management|project accounting|project contract|project quotation|project invoice|project category|project forecast|project hour|project expense|project journal|project estimate)\b/i],
+  ["Expense Management", /\b(expense report|expense claim|travel expense|per diem|corporate card|employee reimbursement|expense management)\b/i],
+
+  ["Commerce / Retail / POS", /\b(point of sale|\bpos\b|commerce|retail channel|store commerce|e[- ]?commerce|omnichannel|call center|assortment|price group|retail statement|shift reconciliation|cash drawer|store terminal|payment terminal|self[- ]?checkout)\b/i],
+  ["Warehouse Management", /\b(warehouse management|\bwms\b|warehouse work|work line|work template|location directive|wave processing|wave label|picking|pick list|put[- ]?away|load planning|shipment|containerization|license plate|mobile device menu|cycle count|replenishment|warehouse location|warehouse receiving|warehouse dispatch)\b/i],
+  ["Inventory Management", /\b(inventory management|inventory dimension|inventory transaction|inventory close|inventory adjustment|inventory transfer|on[- ]?hand|stock count|stock movement|item coverage|reservation hierarchy|serial number|batch number|batch tracking|inventory status|goods receipt|goods issue)\b/i],
+  ["Master Planning & Planning Optimization", /\b(master planning|planning optimization|planned order|planned purchase|planned production|net requirements|coverage group|safety stock|demand forecast|supply forecast|min\/max planning|replenishment planning|planning engine)\b/i],
+  ["Transportation Management", /\b(transportation management|freight bill|freight reconciliation|carrier|route planning|transport load|shipment rate|load building|transportation tender|shipping carrier|delivery route)\b/i],
+  ["Quality Management", /\b(quality order|quality association|quality test|quality group|non[- ]?conformance|quarantine order|quality management|quality inspection|quality control)\b/i],
+  ["Asset Management & Maintenance", /\b(asset management|maintenance request|maintenance work order|maintenance plan|maintenance schedule|functional location|equipment maintenance|asset counter|maintenance job)\b/i],
+  ["Product Information Management", /\b(product information management|\bpim\b|released product|product master|item master|product variant|product attribute|product dimension|engineering change|product catalog|sku\b|bill of material version)\b/i],
+
+  ["Human Resources & Payroll", /\b(human resources|\bhr\b|human resource|personnel management|employee record|worker record|payroll|leave and absence|leave request|absence registration|time and attendance|compensation|benefits management|position management|recruitment|performance review|employee self[- ]?service)\b/i],
+
+  // Cross-module / platform capabilities.
+  ["Data Management / DMF", /\b(data management framework|\bdmf\b|data entity|data import|data export|data migration|data package|data project|staging table|recurring integration|data management workspace|data validation|master data|duplicate data|data quality)\b/i],
+  ["Integrations & APIs", /\b(integration|interface|api\b|odata|rest api|soap|web service|json|xml|service bus|logic app|azure function|webhook|endpoint|middleware|third[- ]?party|external system|inbound message|outbound message|message queue|mule ?soft|postman)\b/i],
+  ["Dual-write & Dataverse", /\b(dual[- ]?write|dataverse|power platform integration|virtual table|dual write map|dual write synchronization|synch(?:ronization)? between dynamics)\b/i],
+  ["Electronic Reporting & E-Invoicing", /\b(electronic reporting|\ber\b format|er configuration|format mapping|model mapping|e[- ]?invoice|electronic invoicing|invoice capture|peppol|localization configuration|tax document)\b/i],
+  ["Reporting & Analytics", /\b(ssrs|reporting services|power bi|management reporter|financial report|electronic report|report design|report deployment|data lake|synapse|analytics|excel add[- ]?in|financial statement|business intelligence)\b/i],
+  ["Workflow & Approvals", /\b(workflow|approval|approval hierarchy|work item|delegation|workflow batch|workflow editor|workflow configuration|purchase approval|journal approval|escalation)\b/i],
+  ["Security & User Access", /\b(user access|security role|security privilege|duty assignment|role assignment|user role|permission|privilege|authorization|authorisation|authentication|login|log in|sign in|password|account locked|access denied|unauthorized|unauthorised|single sign[- ]?on|\bsso\b|multi[- ]?factor|\bmfa\b)\b/i],
+  ["Performance & Availability", /\b(slow|slowness|latency|lag|laggy|performance|hang(?:ing)?|timeout|time out|taking long|unresponsive|not responding|unavailable|outage|crash|service down|system down|application down|server down|deadlock|capacity issue)\b/i],
+  ["Batch Jobs & Scheduling", /\b(batch job|batch processing|batch server|batch group|batch task|recurrence|scheduled job|job history|batch queue|batch execution|job scheduler|task scheduler|recurring job)\b/i],
+  ["Printing & Document Management", /\b(print management|printer|printing|document management|document handling|pdf generation|document routing|label printing|check printing|print destination|print archive|ssrs print)\b/i],
+  ["Email & Notifications", /\b(email|e-mail|smtp|emailing|mail not sent|notification|alert|email template|email distributor|exchange server|outgoing mail|incoming mail)\b/i],
+  ["Customization & Development", /\b(customization|customisation|extension|extensions|x\+\+|visual studio|development task|code deployment|deploy package|compile error|build error|best practice|event handler|chain of command|coc\b|model store|label file|metadata|debugging|debugger)\b/i],
+  ["Environment & Infrastructure", /\b(environment|infrastructure|aos|application object server|iis\b|sql server|database server|azure resource|virtual machine|network|certificate|ssl|tls|storage account|service fabric|cloud hosting|server maintenance|refresh environment|database refresh|environment servicing|update package|platform update|version update|hotfix|onebox|tier.?[1-5])\b/i],
+  ["Licensing & Administration", /\b(license|licence|licensing|subscription|tenant administration|tenant admin|user provisioning|user deprovisioning|system administration|admin center|feature management|configuration key|environment monitoring)\b/i],
+
+  // Other Dynamics and software platforms, only after specific F&O areas.
+  ["Dynamics 365 CE / CRM", /\b(dynamics 365 customer engagement|dynamics 365 crm|dataverse sales|dynamics sales|dynamics customer service|customer service hub|model[- ]?driven app|dynamics field service)\b/i],
+  ["Dynamics 365 Business Central", /\b(business central|dynamics nav|navision)\b/i],
+  ["Power Platform", /\b(power apps|power automate|power pages|power platform|power virtual agents|copilot studio)\b/i],
+  ["Azure & Cloud Services", /\b(azure portal|azure devops|azure storage|azure sql|azure app service|azure key vault|azure monitor|application insights|microsoft entra|active directory|cloud service)\b/i],
+  ["Dynamics 365 F&O - General Support", /\b(dynamics 365 finance|dynamics 365 finance and operations|dynamics 365 f&o|d365\s?fo|d365fo|finance and operations|dynamics ax|ax 2012|axapta)\b/i],
+  ["Other Enterprise Application Support", /\b(enterprise application|business application|erp system|crm system|service management platform|servicenow|salesforce|sap system|oracle application|workday)\b/i],
+  ["General IT / Software Support", /\b(application|software|system|portal|website|browser|desktop|client|server|network|computer|device|operating system|windows|microsoft 365|office 365|outlook|teams|sharepoint|onedrive|excel|word|vpn|remote access|technical support|it support|service request|incident|ticket|error|issue|failed|failure|not working|unable to|cannot|unable|bug)\b/i],
+  ["Other / Unclassified", /$^/]
 ];
 const ISSUES = [
   ["Slowness", /\b(slow|slowness|latency|lag|laggy|performance|hang|hanging|timeout|time out|taking long|delay)/i],
@@ -252,6 +296,50 @@ function csvParse(text){
   const h = out.shift().map(x=>x.replace(/^\uFEFF/,"").trim());
   return out.filter(r=>r.some(x=>x.trim())).map(r=>Object.fromEntries(h.map((k,i)=>[k,r[i]||""])));
 }
+function classifyModule(record,mapping){
+  const entries = Object.entries(record || {}).filter(([key,value])=>
+    value!==null && value!==undefined && String(value).trim()!=="" &&
+    key!==mapping.date && key!==mapping.number
+  );
+  const descriptiveHeader = /(short.?desc|subject|summary|title|description|details|problem|request|comment|work.?note|resolution|close.?note|error|message|symptom|failure|activity|justification|cause|impact|step|diagnostic|log)/i;
+  const contextHeader = /(category|subcategory|module|service|application|area|component|assignment.?group|group|team|configuration.?item|\bci\b|product|system|environment|instance|workflow|template|source|request.?type|service.?instance|platform|process)/i;
+  const descriptive = entries.filter(([key])=>descriptiveHeader.test(key)).map(([,value])=>String(value)).join(" ");
+  const context = entries.filter(([key])=>contextHeader.test(key)).map(([key,value])=>key+": "+String(value)).join(" ");
+  const allFields = entries.map(([key,value])=>key+": "+String(value)).join(" ");
+  const primaryText = (descriptive+" "+context).toLowerCase();
+  const fullText = (primaryText+" "+allFields).toLowerCase();
+
+  // The word "production" by itself describes the live environment, not the manufacturing module.
+  // Manufacturing is recognised only when process terms such as orders, BOMs, routes or shop-floor work appear.
+  const manufacturingSignal = /\b(production order|prod order|batch order|manufactur(?:e|ing)|shop floor|production floor|route card|job card|report as finished|\braf\b|material consumption|bill of materials|\bbom\b|production scheduling|production control|co[- ]?product|by[- ]?product)\b/i.test(fullText);
+  if (!manufacturingSignal) {
+    const environmentFields = entries
+      .filter(([key])=>/(environment|instance|tier|system.?type|deployment.?target|server.?type)/i.test(key))
+      .map(([,value])=>String(value).trim().toLowerCase());
+    const explicitProductionEnvironment = environmentFields.some(value=>/^(prod|prd|production|live|production environment|live environment)$/.test(value));
+    const productionContext = /\b(prod|prd|production|live)\b.{0,70}\b(environment|env|system|instance|server|site|tenant|database|deployment|issue|error|failure|down|unavailable|not working|broken|outage|crash|problem)\b|\b(environment|env|system|instance|server|site|tenant|database|deployment)\b.{0,70}\b(prod|prd|production|live)\b/i.test(primaryText);
+    const standaloneProdSignal = /\b(prod|prd)\b/i.test(descriptive) || /\b(production|live)\s+(?:system|instance|environment|server|site)\b/i.test(fullText);
+    if (explicitProductionEnvironment || productionContext || standaloneProdSignal) {
+      return "Production Environment / Live System";
+    }
+  }
+
+  // Match descriptive/context fields first. If those are inconclusive, use the remaining client fields.
+  const orderedRules = MODULES.filter(module=>module[0]!=="Other / Unclassified");
+  for (const text of [primaryText,fullText]){
+    for (const [label,pattern] of orderedRules){
+      if (pattern.test(text)) return label;
+    }
+  }
+
+  // Explicit platform names get a useful platform-level category rather than a generic Other bucket.
+  if (/\b(dynamics 365 finance|dynamics 365 f&o|d365\s?fo|d365fo|finance and operations|dynamics ax|ax 2012)\b/i.test(fullText)) return "Dynamics 365 F&O - General Support";
+  if (/\b(dynamics 365|microsoft dynamics)\b/i.test(fullText)) return "Microsoft Dynamics 365 - General Support";
+  if (/\b(erp|crm|enterprise application|business application|servicenow|salesforce|sap|oracle|workday)\b/i.test(fullText)) return "Other Enterprise Application Support";
+  if (/\b(application|software|system|portal|website|server|network|desktop|microsoft 365|office 365|outlook|sharepoint|onedrive|excel|teams|vpn|technical support|it support|incident|ticket|error|issue|failed|failure|not working|unable to|cannot|bug)\b/i.test(fullText)) return "General IT / Software Support";
+  return "Other / Unclassified";
+}
+
 function setRawData(raw){
   if (!Array.isArray(raw) || !raw.length) return fail("No ticket rows were found in this file.");
   rawRows = raw;
@@ -288,14 +376,9 @@ function build(raw,mapping){
     const displayText = currentMapping.text ? String(r[currentMapping.text] ?? "").trim() : "";
     const categoryValue = currentMapping.category ? String(r[currentMapping.category] ?? "").trim() : "";
 
-    // Analyse all client-provided fields, not just a fixed set of column names.
-    const searchable = Object.keys(r)
-      .filter(key=>key!==currentMapping.date && key!==currentMapping.number)
-      .map(key=>String(r[key] ?? "").trim())
-      .filter(Boolean)
-      .join(" ");
-    const classificationText = searchable + " " + categoryValue;
-    const mod = (MODULES.find(m=>m[1].test(classificationText))||["Other"])[0];
+    // Read subject, descriptions, notes, category, assignment group and other client fields.
+    const mod = classifyModule(r,currentMapping);
+    const classificationText = Object.entries(r).map(([key,value])=>key+": "+String(value ?? "")).join(" ");
     const issues = ISSUES.filter(m=>m[1].test(classificationText)).map(m=>m[0]);
     const dow = dateValue ? (dateValue.getDay()+6)%7 : null;
     const fallbackNumber = currentMapping.number && String(r[currentMapping.number] ?? "").trim();
@@ -351,7 +434,12 @@ function render(){
     "<div><b>"+peakDay+"</b><span>"+(dated.length ? "Busiest day" : "Date data unavailable")+"</span></div>";
 
   const moduleCounts = count(all,t=>t.mod), issueCounts = count(all,t=>t.iss);
-  const modulePairs = MODULES.map(m=>[m[0],moduleCounts[m[0]]||0]).concat([["Other",moduleCounts["Other"]||0]]);
+  const modulePairs = MODULES
+    .map(m=>[m[0],moduleCounts[m[0]]||0])
+    .filter(pair=>pair[1]>0)
+    .concat(Object.keys(moduleCounts)
+      .filter(name=>!MODULES.some(m=>m[0]===name) && moduleCounts[name]>0)
+      .map(name=>[name,moduleCounts[name]]));
   const issuePairs = ISSUES.map(m=>[m[0],issueCounts[m[0]]||0]);
   $("mods").innerHTML = "<div id='m1'></div><div id='m2'></div>";
   bars($("m1"),"mod",modulePairs,false);
@@ -399,7 +487,7 @@ document.addEventListener("click", e=>{
 $("clear").onclick = ()=>{ filter=null; render(); };
 $("exp").onclick = ()=>{
   const q = s=>'"'+String(s).replace(/"/g,'""')+'"';
-  const csv = ["Number,Opened,Priority,Area of work,Issue type,Day,Short description"].concat(window.__list.map(t=>[t.num,t.date.toISOString(),t.pri,t.mod,t.iss.join("; "),DAYS[t.dow],t.short].map(q).join(","))).join("\n");
+  const csv = ["Number,Opened,Priority,Area of work,Issue type,Day,Short description"].concat(window.__list.map(t=>[t.num,t.date ? t.date.toISOString() : "",t.pri,t.mod,t.iss.join("; "),t.dow===null ? "" : DAYS[t.dow],t.short].map(q).join(","))).join("\n");
   const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.download = "tickets-filtered.csv"; a.click();
 };
 function readFile(f){
