@@ -44,7 +44,7 @@ main{padding:0 clamp(16px,4vw,40px) 40px;max-width:1280px;margin:0 auto}
 .pri .p1 b{color:var(--p1)}.pri .p2 b{color:var(--p2)}.pri .p3 b{color:var(--p3)}.pri .p4 b{color:var(--mute)}
 .pri button.sel,.split button.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
 .split{display:flex;gap:12px}
-.split button{flex:1;padding:16px 8px;text-align:center;border-radius:8px}
+.split button{flex:1;min-width:0;padding:16px 8px;text-align:center;border-radius:8px}
 .split b{display:block;font-size:1.9rem;line-height:1.1}
 .split span{font-size:.8rem;color:var(--mute)}
 .note{color:var(--mute);font-size:.8rem;margin:10px 0 0}
@@ -102,7 +102,7 @@ th{color:var(--mute);font-weight:500;white-space:nowrap}
       <section class="tile wide"><h2>Tickets by module / support area and issue type</h2><div id="mods" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));column-gap:24px"></div>
         <p class="note">Product-agnostic classification uses each ticket's description and relevant client fields independently. Platform-specific labels require an explicit platform name in a single field; generic business and IT support areas apply across products.</p></section>
       <section class="tile"><h2>Tickets by priority</h2><div class="pri" id="pri"></div></section>
-      <section class="tile"><h2>Weekdays vs weekends</h2><div class="split" id="split"></div></section>
+      <section class="tile"><h2>Ticket date coverage</h2><div class="split" id="split"></div><p class="note" id="date-reconciliation-note"></p></section>
       <section class="tile wide"><h2>Tickets by day of the week</h2><div id="days"></div><p class="note" id="date-chart-note"></p></section>
     </div>
     <section class="tile">
@@ -316,28 +316,56 @@ function parseDate(v, order="dmy"){
   const d=new Date(s);
   return isValidTicketDate(d)?d:null;
 }
-function detectDateColumn(headers,rawRows){
-  const candidates=headers.map(name=>{
-    const score=dateHeaderScore(name);
-    if(score<0) return null;
-    const values=(rawRows||[]).slice(0,100).map(row=>row[name]).filter(v=>v!==null&&v!==undefined&&String(v).trim()!=="");
+function isTicketCreatedDateHeader(header){
+  const tokens=headerTokens(header);
+  const norm=normalizeHeader(header);
+  if(!tokens.length) return false;
+  // Never substitute a due, target, modified, resolved, closed or completed date
+  // for the date the ticket was raised.
+  if(/\b(due|target|deadline|expiry|expiration|reminder|birth|dob|updated|modified|resolved|closed|completed|approved|assigned|last)\b/i.test(norm)) return false;
+  return tokens.some(token=>[
+    "opened","open","created","creation","reported","raised","submitted","submission",
+    "logged","received","occurred","recorded","entered","incident","request","ticket",
+    "case","date","datetime","timestamp","time"
+  ].includes(token));
+}
+function detectDateColumns(headers,rawRows,selectedColumn=""){
+  const candidates=[];
+  for(const name of headers){
+    if(!isTicketCreatedDateHeader(name) && name!==selectedColumn) continue;
+    const baseScore=dateHeaderScore(name);
+    if(baseScore<0 && name!==selectedColumn) continue;
+    const values=(rawRows||[]).map(row=>row?.[name]).filter(value=>
+      value!==null && value!==undefined && String(value).trim()!==""
+    );
     const order=inferDateOrder(values);
-    const valid=values.filter(v=>parseDate(v,order)).length;
-    const ratio=values.length?valid/values.length:0;
-    return {name,score:score+ratio*30,ratio,order,values};
-  }).filter(Boolean).sort((a,b)=>b.score-a.score);
-  if(candidates.length && candidates[0].ratio>=0.35) return candidates[0].name;
-
-  // Fall back to columns explicitly named with a date/time token when sample values are parseable.
-  const fallback=headers.map(name=>{
-    const tokens=headerTokens(name);
-    if(dateHeaderScore(name)<0) return null;
-    if(!tokens.some(t=>["date","datetime","timestamp","time"].includes(t))) return null;
-    const values=(rawRows||[]).slice(0,100).map(row=>row[name]).filter(v=>v!==null&&v!==undefined&&String(v).trim()!=="");
-    const ratio=values.length?values.filter(v=>parseDate(v,inferDateOrder(values))).length/values.length:0;
-    return ratio>=0.5?{name,score:ratio*20}:null;
-  }).filter(Boolean).sort((a,b)=>b.score-a.score);
-  return fallback[0]?.name || "";
+    const validCount=values.reduce((count,value)=>count+(parseDate(value,order)?1:0),0);
+    if(validCount===0 && name!==selectedColumn) continue;
+    const ratio=values.length?validCount/values.length:0;
+    const score=(name===selectedColumn?10000:Math.max(0,baseScore))+ratio*50;
+    candidates.push({name,order,score,validCount,nonEmptyCount:values.length});
+  }
+  candidates.sort((a,b)=>b.score-a.score);
+  if(selectedColumn){
+    const selected=candidates.find(candidate=>candidate.name===selectedColumn);
+    if(selected) return [selected,...candidates.filter(candidate=>candidate.name!==selectedColumn)];
+    return [{name:selectedColumn,order:"dmy",score:10000,validCount:0,nonEmptyCount:0},...candidates];
+  }
+  return candidates;
+}
+function detectDateColumn(headers,rawRows){
+  const candidates=detectDateColumns(headers,rawRows);
+  return candidates[0]?.name || "";
+}
+function resolveTicketDate(record,dateCandidates,selectedColumn,dateOrderOverride="auto"){
+  for(const candidate of dateCandidates||[]){
+    const order=(candidate.name===selectedColumn && dateOrderOverride && dateOrderOverride!=="auto")
+      ? dateOrderOverride
+      : candidate.order;
+    const parsed=parseDate(record?.[candidate.name],order||"dmy");
+    if(parsed) return {date:parsed,source:candidate.name};
+  }
+  return {date:null,source:""};
 }
 function detectTextColumn(headers,rawRows){
   const definitions=[
@@ -688,7 +716,7 @@ function setRawData(raw){
   $("app").classList.remove("hidden");
   $("exp").classList.remove("hidden");
   $("mapping-note").textContent = "Detected " + sourceHeaders.length + " columns. " +
-    (currentMapping.date ? "Date: " + currentMapping.date + ". " : "No date field detected. ") +
+    (currentMapping.date ? "Date: " + currentMapping.date + (currentMapping.dateCandidates?.length>1 ? " (with " + (currentMapping.dateCandidates.length-1) + " alternate created/opened date field(s))" : "") + ". " : "No date field detected. ") +
     (currentMapping.priority ? "Priority: " + currentMapping.priority + ". " : "Priority is optional and was not detected. ") +
     (currentMapping.text ? "Description: " + currentMapping.text + ". " : "No subject/description field detected; Short description will be blank. ") +
     (currentMapping.assigned ? "Assigned To: " + currentMapping.assigned + ". " : "No Assigned To field detected. ") +
@@ -701,6 +729,11 @@ function build(raw,mapping){
   rawRows=cleaned.rows;
   if(!rawRows.length) return fail("No valid ticket rows remain after removing blank, repeated-header and export-summary rows.");
   currentMapping = mapping || detectMapping(Object.keys(rawRows[0] || {}),rawRows);
+  currentMapping.dateCandidates = detectDateColumns(
+    Object.keys(rawRows[0]||{}),
+    rawRows,
+    currentMapping.date || ""
+  );
   currentDateOrder = currentMapping.date
     ? (currentMapping.dateOrder && currentMapping.dateOrder!=="auto"
       ? currentMapping.dateOrder
@@ -709,7 +742,13 @@ function build(raw,mapping){
 
   let invalidDates = 0;
   rows = rawRows.map((r,i)=>{
-    const dateValue = currentMapping.date ? parseDate(r[currentMapping.date],currentDateOrder) : null;
+    const resolvedDate = resolveTicketDate(
+      r,
+      currentMapping.dateCandidates,
+      currentMapping.date,
+      currentMapping.dateOrder || "auto"
+    );
+    const dateValue = resolvedDate.date;
     if (currentMapping.date && !dateValue) invalidDates++;
 
     const priority = currentMapping.priority ? parsePriority(r[currentMapping.priority]) : "";
@@ -724,6 +763,7 @@ function build(raw,mapping){
     return {
       num:ticketNumber,
       date:dateValue,
+      dateSource:resolvedDate.source,
       pri:priority,
       mod:mod,
       iss:issues,
@@ -751,7 +791,12 @@ function fail(msg){ $("status").textContent = msg; alert(msg); }
 
 function count(items, keyFn){ const m={}; items.forEach(t=>[].concat(keyFn(t)).forEach(k=>m[k]=(m[k]||0)+1)); return m; }
 function match(t){ if(!filter) return true;
-  return filter.t==="mod"?t.mod===filter.v : filter.t==="iss"?t.iss.includes(filter.v) : filter.t==="pri"?t.pri===filter.v : filter.t==="day"?t.dow!==null && DAYS[t.dow]===filter.v : t.wk===filter.v; }
+  return filter.t==="mod"?t.mod===filter.v :
+    filter.t==="iss"?t.iss.includes(filter.v) :
+    filter.t==="pri"?t.pri===filter.v :
+    filter.t==="day"?t.dow!==null && DAYS[t.dow]===filter.v :
+    filter.t==="undated"?!t.date :
+    filter.t==="wk"?t.wk===filter.v:false; }
 function isSel(t,v){ return filter && filter.t===t && filter.v===v; }
 function bars(el, t, pairs, peak){
   const max = Math.max(1, ...pairs.map(p=>p[1]));
@@ -818,16 +863,22 @@ function render(){
       "</b><span>"+priority+" "+priorityLabels[priority]+"</span></button>";
   }).join("");
 
-  // Compute from valid ticket dates only; missing weekend days are deliberately shown as zero.
-  const weekendByDay={
-    Saturday:dated.filter(ticket=>ticket.dow===5).length,
-    Sunday:dated.filter(ticket=>ticket.dow===6).length
-  };
+  // Partition every accepted ticket into exactly one date bucket.
   const weekdayTotal=dated.filter(ticket=>ticket.dow!==null && ticket.dow>=0 && ticket.dow<=4).length;
-  const weekendTotal=weekendByDay.Saturday+weekendByDay.Sunday;
+  const weekendTotal=dated.filter(ticket=>ticket.dow===5 || ticket.dow===6).length;
+  const unavailableDateTotal=total-dated.length;
+  const datedTotal=weekdayTotal+weekendTotal;
+
+  // Invariant: weekday + weekend + date unavailable must equal total accepted tickets.
+  // The unavailable bucket is explicit; do not invent dates for rows with no valid creation date.
   $("split").innerHTML=
     "<button class='"+(isSel("wk","Weekday")?"sel":"")+"' data-t='wk' data-v='Weekday'><b>"+weekdayTotal+"</b><span>Mon to Fri</span></button>"+
-    "<button class='"+(isSel("wk","Weekend")?"sel":"")+"' data-t='wk' data-v='Weekend'><b>"+weekendTotal+"</b><span>Sat and Sun</span></button>";
+    "<button class='"+(isSel("wk","Weekend")?"sel":"")+"' data-t='wk' data-v='Weekend'><b>"+weekendTotal+"</b><span>Sat and Sun</span></button>"+
+    "<button class='"+(isSel("undated","")?"sel":"")+"' data-t='undated' data-v=''><b>"+unavailableDateTotal+"</b><span>Date unavailable</span></button>";
+  $("date-reconciliation-note").textContent=
+    "Date coverage: "+datedTotal.toLocaleString("en-IN")+" of "+total.toLocaleString("en-IN")+
+    " tickets dated; "+unavailableDateTotal.toLocaleString("en-IN")+
+    " without a usable created/opened date. Weekdays + weekends + unavailable = total tickets.";
   const dayCounts=count(dated,ticket=>DAYS[ticket.dow]);
   bars($("days"),"day",DAYS.map(day=>[day,dayCounts[day]||0]),true);
   $("date-chart-note").textContent=dated.length
