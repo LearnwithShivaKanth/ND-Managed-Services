@@ -318,16 +318,21 @@ function parseDate(v, order="dmy"){
 }
 function isTicketCreatedDateHeader(header){
   const tokens=headerTokens(header);
-  const norm=normalizeHeader(header);
   if(!tokens.length) return false;
-  // Never substitute a due, target, modified, resolved, closed or completed date
-  // for the date the ticket was raised.
-  if(/\b(due|target|deadline|expiry|expiration|reminder|birth|dob|updated|modified|resolved|closed|completed|approved|assigned|last)\b/i.test(norm)) return false;
-  return tokens.some(token=>[
+  // These describe a later lifecycle event, a deadline, or a duration—not ticket creation.
+  const excluded=new Set([
+    "due","target","deadline","expiry","expiration","reminder","birth","dob",
+    "updated","modified","resolved","closed","completed","approved","assigned",
+    "last","response","resolution","elapsed","duration","effort","hours","hour",
+    "hrs","minutes","minute","mins","age","uptime","downtime","sla"
+  ]);
+  if(tokens.some(token=>excluded.has(token))) return false;
+  const accepted=new Set([
     "opened","open","created","creation","reported","raised","submitted","submission",
     "logged","received","occurred","recorded","entered","incident","request","ticket",
     "case","date","datetime","timestamp","time"
-  ].includes(token));
+  ]);
+  return tokens.some(token=>accepted.has(token));
 }
 function detectDateColumns(headers,rawRows,selectedColumn=""){
   const candidates=[];
