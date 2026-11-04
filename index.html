@@ -100,7 +100,7 @@ th{color:var(--mute);font-weight:500;white-space:nowrap}
     <div class="kpi" id="kpi"></div>
     <div class="grid">
       <section class="tile wide"><h2>Tickets by module / support area and issue type</h2><div id="mods" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));column-gap:24px"></div>
-        <p class="note">Each ticket is assigned to its best-fit business module or technical support area using descriptive fields and other export columns. Issue types can overlap with the module category.</p></section>
+        <p class="note">Product-agnostic classification uses each ticket's description and relevant client fields independently. Platform-specific labels require an explicit platform name in a single field; generic business and IT support areas apply across products.</p></section>
       <section class="tile"><h2>Tickets by priority</h2><div class="pri" id="pri"></div></section>
       <section class="tile"><h2>Weekdays vs weekends</h2><div class="split" id="split"></div></section>
       <section class="tile wide"><h2>Tickets by day of the week</h2><div id="days"></div><p class="note" id="date-chart-note"></p></section>
@@ -442,60 +442,104 @@ function csvParse(text){
   return out.filter(r=>r.some(x=>x.trim())).map(r=>Object.fromEntries(h.map((k,i)=>[k,r[i]||""])));
 }
 function classifyModule(record,mapping){
-  const entries = Object.entries(record || {}).filter(([key,value])=>
+  const entries=Object.entries(record||{}).filter(([key,value])=>
     value!==null && value!==undefined && String(value).trim()!=="" &&
-    key!==mapping.date && key!==mapping.number
-  );
-  const descriptiveHeader = /(short.?desc|subject|summary|title|description|details|problem|request|comment|work.?note|resolution|close.?note|error|message|symptom|failure|activity|justification|cause|impact|step|diagnostic|log)/i;
-  const contextHeader = /(category|subcategory|module|service|application|area|component|assignment.?group|group|team|configuration.?item|\bci\b|product|system|environment|instance|workflow|template|source|request.?type|service.?instance|platform|process)/i;
-  const descriptive = entries.filter(([key])=>descriptiveHeader.test(key)).map(([,value])=>String(value)).join(" ").toLowerCase();
-  const context = entries.filter(([key])=>contextHeader.test(key)).map(([key,value])=>key+": "+String(value)).join(" ").toLowerCase();
-  const allFields = entries.map(([key,value])=>key+": "+String(value)).join(" ").toLowerCase();
-  const fullText = (descriptive+" "+context+" "+allFields).toLowerCase();
-  const orderedRules = MODULES.filter(module=>module[0]!=="Other / Unclassified");
+    key!==mapping.date && key!==mapping.number &&
+    !isBlankOrPlaceholder(value)
+  ).map(([key,value])=>({key,value:String(value).trim(),normKey:normalizeHeader(key)}));
 
-  // Manufacturing process terms take precedence over the generic word "production".
-  const manufacturingRule = MODULES.find(module=>module[0]==="Production Control / Manufacturing");
-  if (manufacturingRule && manufacturingRule[1].test(fullText)) return manufacturingRule[0];
+  const metadataHeader=/(assignedto|assignee|owner|responsible|requestedby|requestedfor|requester|submitter|caller|contact|email|phone|createdby|openedby|updatedby|modifiedby|resolvedby|closedby|lastupdatedby|assignmentgroup|assignedgroup|approver|employee|analyst|technician|agent|supportuser)/i;
+  const descriptiveHeader=/(shortdescription|shortdesc|subject|summary|title|description|details|problem|request|issue|error|message|symptom|failure|worknote|resolution|closurenote|activity|justification|cause|impact|diagnostic|log|comments?)/i;
+  const productHeader=/(product|application|platform|software|systemname|servicename|technology|configurationitem|ci\b|offering|businessservice|applicationname)/i;
+  const moduleHeader=/(category|subcategory|module|servicearea|businessprocess|process|component|function|functionalarea)/i;
+  const groupHeader=/(assignmentgroup|resolvergroup|supportgroup|group|team|queue)/i;
 
-  // A specific module or support area in the ticket description beats a broad Category field.
-  const genericLabels = new Set(["Performance & Availability","General IT / Software Support","Other Enterprise Application Support","Environment & Infrastructure"]);
-  const descriptiveSpecificMatch = orderedRules.find(([label,pattern])=>
-    !genericLabels.has(label) && pattern.test(descriptive)
-  );
-  if (descriptiveSpecificMatch) return descriptiveSpecificMatch[0];
+  const descriptive=entries.filter(entry=>descriptiveHeader.test(entry.normKey) && !metadataHeader.test(entry.normKey));
+  const productFields=entries.filter(entry=>productHeader.test(entry.normKey) && !metadataHeader.test(entry.normKey));
+  const moduleFields=entries.filter(entry=>moduleHeader.test(entry.normKey) && !metadataHeader.test(entry.normKey));
+  const groupFields=entries.filter(entry=>groupHeader.test(entry.normKey) && !metadataHeader.test(entry.normKey));
+  const supportFields=entries.filter(entry=>!metadataHeader.test(entry.normKey));
 
-  // If the ticket text explicitly says prod/production/live, classify it as an environment incident
-  // unless the manufacturing rule above identified a production process.
-  if (/\b(prod|prd|production|live)\b/i.test(descriptive)) return "Production Environment / Live System";
+  // Every rule is evaluated against one source field at a time.
+  // Never join adjacent column values: "Business" + "Central" must not become Business Central.
+  const matches=(fields,pattern)=>fields.some(field=>pattern.test(field.value));
+  const orderedRules=MODULES.filter(module=>module[0]!=="Other / Unclassified");
+  const genericLabels=new Set([
+    "Performance & Availability",
+    "General IT / Software Support",
+    "Other Enterprise Application Support",
+    "Environment & Infrastructure",
+    "Dynamics 365 F&O - General Support",
+    "Dynamics 365 CE / CRM",
+    "Dynamics 365 Business Central",
+    "Power Platform",
+    "Azure & Cloud Services"
+  ]);
 
-  // Exact values in environment/context columns are useful when the description is blank or vague.
-  const environmentFields = entries
-    .filter(([key])=>/(environment|instance|tier|system.?type|deployment.?target|server.?type)/i.test(key))
-    .map(([,value])=>String(value).trim().toLowerCase());
-  const contextFields = entries
-    .filter(([key])=>/(category|subcategory|module|source|team|assignment.?group|service|request.?type)/i.test(key))
-    .map(([,value])=>String(value).trim().toLowerCase());
-  const explicitProductionEnvironment = environmentFields.concat(contextFields)
-    .some(value=>/^(prod|prd|production|live|production environment|live environment)$/.test(value));
-  const productionContext = /\b(prod|prd|production|live)\b.{0,70}\b(environment|env|system|instance|server|site|tenant|database|deployment|issue|error|failure|down|unavailable|not working|broken|outage|crash|problem)\b|\b(environment|env|system|instance|server|site|tenant|database|deployment)\b.{0,70}\b(prod|prd|production|live)\b/i.test(context);
-  if (explicitProductionEnvironment || productionContext) return "Production Environment / Live System";
-
-  // Use a broad issue category from the description before falling back to metadata fields.
-  const descriptiveGeneralMatch = orderedRules.find(([label,pattern])=>pattern.test(descriptive));
-  if (descriptiveGeneralMatch) return descriptiveGeneralMatch[0];
-
-  // Search category, assignment group, configuration item, service instance and other client fields.
-  for (const text of [context,fullText]){
-    for (const [label,pattern] of orderedRules){
-      if (pattern.test(text)) return label;
-    }
+  // Recognize manufacturing workflows independently from a Production/live environment label.
+  const manufacturingRule=MODULES.find(module=>module[0]==="Production Control / Manufacturing");
+  if(manufacturingRule && matches([...descriptive,...moduleFields,...supportFields.filter(field=>!descriptive.includes(field))],manufacturingRule[1])){
+    return manufacturingRule[0];
   }
 
-  if (/\b(dynamics 365 finance|dynamics 365 f&o|d365\s?fo|d365fo|finance and operations|dynamics ax|ax 2012)\b/i.test(fullText)) return "Dynamics 365 F&O - General Support";
-  if (/\b(dynamics 365|microsoft dynamics)\b/i.test(fullText)) return "Microsoft Dynamics 365 - General Support";
-  if (/\b(erp|crm|enterprise application|business application|servicenow|salesforce|sap|oracle|workday)\b/i.test(fullText)) return "Other Enterprise Application Support";
-  if (/\b(application|software|system|portal|website|server|network|desktop|microsoft 365|office 365|outlook|sharepoint|onedrive|excel|teams|vpn|technical support|it support|incident|ticket|error|issue|failed|failure|not working|unable to|cannot|bug)\b/i.test(fullText)) return "General IT / Software Support";
+  // 1. Specific business module or support function from the ticket narrative.
+  const narrativeMatch=orderedRules.find(([label,pattern])=>
+    !genericLabels.has(label) && matches(descriptive,pattern)
+  );
+  if(narrativeMatch) return narrativeMatch[0];
+
+  // 2. Explicit production/live environment mention in a single narrative field.
+  if(matches(descriptive,/\b(prod|prd|production|live)\b/i)){
+    return "Production Environment / Live System";
+  }
+
+  // 3. Specific business module explicitly named in category/module/product context.
+  const contextFields=[...moduleFields,...productFields];
+  const contextMatch=orderedRules.find(([label,pattern])=>
+    !genericLabels.has(label) && matches(contextFields,pattern)
+  );
+  if(contextMatch) return contextMatch[0];
+
+  // 4. Platform identification is strict and field-scoped.
+  // Product/platform labels are returned only when a single source value contains the full identifier.
+  const explicitPlatformRules=[
+    ["Dynamics 365 Business Central",/\b(?:microsoft\s+)?dynamics\s+365\s+business\s+central\b|\bbusiness\s+central\b|\bdynamics\s+nav\b|\bnavision\b/i],
+    ["Dynamics 365 CE / CRM",/\b(?:microsoft\s+)?dynamics\s+365\s+(?:customer engagement|crm|sales|customer service|field service)\b|\bcustomer service hub\b/i],
+    ["Dynamics 365 F&O - General Support",/\b(?:microsoft\s+)?dynamics\s+365\s+(?:finance(?:\s+and\s+operations)?|f\s*&\s*o)\b|\bdynamics\s+365\s+finance\s+and\s+operations\b|\bd365\s?fo\b|\bd365fo\b|\bdynamics ax\b|\baxapta\b|\bax 2012\b/i],
+    ["SAP ERP Support",/\bSAP\s+(?:S\/4HANA|ECC|ERP|Business One|HANA)\b|\bSAP\b/i],
+    ["Oracle Application Support",/\bOracle\s+(?:E-?Business Suite|Fusion|Cloud ERP|Database|Applications?)\b/i],
+    ["Salesforce CRM Support",/\bSalesforce(?:\s+(?:Sales|Service|Marketing)\s+Cloud)?\b/i],
+    ["ServiceNow ITSM Support",/\bServiceNow\b|\bService\s+Now\b/i],
+    ["Workday HCM / ERP Support",/\bWorkday(?:\s+(?:HCM|Financial Management|Payroll))?\b/i],
+    ["Atlassian / Jira Support",/\bJira(?:\s+Service Management)?\b|\bConfluence\b|\bAtlassian\b/i],
+    ["Power Platform",/\bPower\s+(?:Apps|Automate|Pages|Platform|Virtual Agents)\b|\bCopilot Studio\b/i],
+    ["Azure & Cloud Services",/\bAzure\b|\bMicrosoft Entra\b|\bActive Directory\b|\bAWS\b|\bAmazon Web Services\b|\bGoogle Cloud\b|\bGCP\b/i]
+  ];
+  for(const [label,pattern] of explicitPlatformRules){
+    if(matches([...productFields,...descriptive],pattern)) return label;
+  }
+
+  // 5. Common operational support areas from descriptive text, then module/group context.
+  const descriptiveGeneral=orderedRules.find(([label,pattern])=>
+    (genericLabels.has(label) || [
+      "Database & Data Platform","Network & Connectivity","Microsoft 365 & Collaboration",
+      "Hardware & End-user Support","ITSM & Service Management"
+    ].includes(label)) && matches(descriptive,pattern)
+  );
+  if(descriptiveGeneral) return descriptiveGeneral[0];
+
+  const contextGeneral=orderedRules.find(([label,pattern])=>
+    !genericLabels.has(label) && matches([...moduleFields,...groupFields,...productFields],pattern)
+  );
+  if(contextGeneral) return contextGeneral[0];
+
+  // 6. Fallback to general enterprise/software support only on a positive signal in one field.
+  if(matches(supportFields,/\b(erp|crm|enterprise application|business application|servicenow|salesforce|sap|oracle|workday|business central|dynamics nav)\b/i)){
+    return "Other Enterprise Application Support";
+  }
+  if(matches(supportFields,/\b(application|software|system|portal|website|browser|desktop|client|server|network|computer|device|operating system|windows|microsoft 365|office 365|outlook|teams|sharepoint|onedrive|excel|word|vpn|remote access|technical support|it support|service request|incident|ticket|error|issue|failed|failure|not working|unable to|cannot|bug)\b/i)){
+    return "General IT / Software Support";
+  }
   return "Other / Unclassified";
 }
 
