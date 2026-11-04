@@ -37,6 +37,12 @@ main{padding:0 clamp(16px,4vw,40px) 40px;max-width:1280px;margin:0 auto}
 .row .b i{display:block;height:100%;background:var(--bar);border-radius:5px}
 .row .c{flex:0 0 44px;text-align:right;font-weight:600;font-size:.9rem}
 .row.peak .b i{background:var(--accent)}
+.page-controls{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:12px}
+.page-controls button{padding:7px 12px;border:1px solid var(--line);border-radius:7px;background:var(--surface);color:var(--ink);cursor:pointer}
+.page-controls button:disabled{opacity:.4;cursor:not-allowed}
+#tickets-section{scroll-margin-top:14px}
+#module-chart .row{cursor:pointer}
+#module-chart .row:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .pri{display:flex;gap:12px}
 .pri button{flex:1;padding:16px 8px;text-align:center;border-radius:8px}
 .pri b{display:block;font-size:1.9rem;line-height:1.1}
@@ -99,15 +105,16 @@ th{color:var(--mute);font-weight:500;white-space:nowrap}
   <div id="app" class="hidden">
     <div class="kpi" id="kpi"></div>
     <div class="grid">
-      <section class="tile wide"><h2>Tickets by module / support area and issue type</h2><div id="mods" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));column-gap:24px"></div>
+      <section class="tile wide" id="module-chart"><h2>Tickets by module / support area and issue type</h2><div id="mods" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));column-gap:24px"></div><p class="note">Select any module or issue-type bar to view its matching tickets below. Select the active bar again or use Clear filter to return to all tickets.</p>
         <p class="note">Product-agnostic classification uses each ticket's description and relevant client fields independently. Platform-specific labels require an explicit platform name in a single field; generic business and IT support areas apply across products.</p></section>
       <section class="tile"><h2>Tickets by priority</h2><div class="pri" id="pri"></div></section>
       <section class="tile"><h2>Ticket date coverage</h2><div class="split" id="split"></div><p class="note" id="date-reconciliation-note"></p></section>
       <section class="tile wide"><h2>Tickets by day of the week</h2><div id="days"></div><p class="note" id="date-chart-note"></p></section>
     </div>
-    <section class="tile">
-      <div class="tbar"><h2 id="tt" style="margin:0">Tickets</h2><button id="clear" class="hidden">Clear filter</button></div>
+    <section class="tile" id="tickets-section">
+      <div class="tbar"><h2 id="tt" style="margin:0">All tickets</h2><button id="clear" class="hidden">Clear filter</button></div>
       <div class="wrap"><table><thead><tr><th>Number / ID</th><th>Opened / Created</th><th>Priority</th><th>Categories</th><th>Assigned To</th><th>Subject / Description</th></tr></thead><tbody id="tb"></tbody></table></div>
+      <div id="page-controls" class="page-controls"></div>
       <p class="note" id="more"></p>
     </section>
   </div>
@@ -183,6 +190,8 @@ const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sun
 /* ----------------------------------------------------------------------------------- */
 const $ = id => document.getElementById(id);
 let rows = [], filter = null, rawRows = [], sourceHeaders = [], currentMapping = {}, currentDateOrder = "dmy", importCleanup = {removed:0,pivotMode:false};
+let dashboardStats = null, buildGeneration = 0, tablePage = 0;
+const TICKET_PAGE_SIZE = 100;
 
 const FIELD_ALIASES = {
   date: ["openedat","openedon","openeddate","opendate","createdat","createdon","createddate","creationdate","datecreated","dateopened","reportedat","reportedon","reporteddate","submittedat","submittedon","raisedat","raisedon","loggedat","receivedat","incidentdate","requestdate","entrydate","eventdate","occurredat","timestamp","datetime","date"],
@@ -702,6 +711,7 @@ function setRawData(raw){
   sourceHeaders = Object.keys(raw.find(record=>record && typeof record==="object") || {});
   if (!sourceHeaders.length) return fail("The file has no readable column headers. Please check that the first row contains column names.");
 
+  filter=null; tablePage=0; dashboardStats=null;
   const cleaned=cleanTicketRows(raw);
   importCleanup=cleaned;
   rawRows=cleaned.rows;
@@ -728,68 +738,67 @@ function setRawData(raw){
     (cleaned.removed ? cleaned.removed + " blank, orphan, repeated-header or export-summary rows ignored." : "No blank or export-summary rows detected.");
   build(rawRows,currentMapping);
 }
-function build(raw,mapping){
-  if (!raw || !raw.length) return fail("No rows found in that file.");
+async function build(raw,mapping){
+  if(!raw || !raw.length) return fail("No rows found in that file.");
+  const generation=++buildGeneration;
   const cleaned=cleanTicketRows(raw);
   rawRows=cleaned.rows;
   if(!rawRows.length) return fail("No valid ticket rows remain after removing blank, repeated-header and export-summary rows.");
-  currentMapping = mapping || detectMapping(Object.keys(rawRows[0] || {}),rawRows);
-  currentMapping.dateCandidates = detectDateColumns(
-    Object.keys(rawRows[0]||{}),
-    rawRows,
-    currentMapping.date || ""
-  );
-  currentDateOrder = currentMapping.date
-    ? (currentMapping.dateOrder && currentMapping.dateOrder!=="auto"
-      ? currentMapping.dateOrder
-      : inferDateOrder(rawRows.map(row=>row[currentMapping.date]).filter(v=>v!==null&&v!==undefined&&String(v).trim()!=="")))
-    : "dmy";
+  currentMapping=mapping || detectMapping(Object.keys(rawRows[0]||{}),rawRows);
+  currentMapping.dateCandidates=detectDateColumns(Object.keys(rawRows[0]||{}),rawRows,currentMapping.date||"");
+  currentDateOrder=currentMapping.date
+    ?(currentMapping.dateOrder&&currentMapping.dateOrder!=="auto"
+      ?currentMapping.dateOrder
+      :inferDateOrder(rawRows.map(row=>row[currentMapping.date]).filter(value=>value!==null&&value!==undefined&&String(value).trim()!=="")))
+    :"dmy";
 
-  let invalidDates = 0;
-  rows = rawRows.map((r,i)=>{
-    const resolvedDate = resolveTicketDate(
-      r,
-      currentMapping.dateCandidates,
-      currentMapping.date,
-      currentMapping.dateOrder || "auto"
-    );
-    const dateValue = resolvedDate.date;
-    if (currentMapping.date && !dateValue) invalidDates++;
-
-    const priority = currentMapping.priority ? parsePriority(r[currentMapping.priority]) : "";
-    const displayText = currentMapping.text ? String(r[currentMapping.text] ?? "").trim() : "";
-    const assignedValue = currentMapping.assigned ? String(r[currentMapping.assigned] ?? "").trim() : "";
-
-    const mod = classifyModule(r,currentMapping);
-    const classificationText = Object.entries(r).map(([key,value])=>key+": "+String(value ?? "")).join(" ");
-    const issues = ISSUES.filter(m=>m[1].test(classificationText)).map(m=>m[0]);
-    const dow = dateValue ? (dateValue.getDay()+6)%7 : null;
-    const ticketNumber = currentMapping.number ? String(r[currentMapping.number] ?? "").trim() : "";
-    return {
-      num:ticketNumber,
-      date:dateValue,
-      dateSource:resolvedDate.source,
-      pri:priority,
-      mod:mod,
-      iss:issues,
-      dow:dow,
-      wk:dow===null?null:(dow>=5?"Weekend":"Weekday"),
-      short:displayText,
-      assigned:assignedValue
-    };
-  });
-
-  const missingDates = rows.filter(t=>!t.date).length;
-  $("status").textContent = rows.length + " tickets loaded" +
-    (importCleanup.removed ? " (" + importCleanup.removed + " blank, orphan, repeated-header or export-summary rows ignored" + (importCleanup.pivotMode ? "; pivot summary rows excluded" : "") + ")" : "") +
-    (currentMapping.date
-      ? (missingDates ? "; " + missingDates + " rows have missing or unreadable dates." : ".")
-      : "; no date column mapped, so date-based metrics are unavailable.") +
-    (currentMapping.priority ? "" : " Priority was not provided; counts remain zero.");
+  const totalRows=rawRows.length;
+  const builtRows=[];
+  const chunkSize=400;
+  $("status").textContent="Preparing report: 0 of "+totalRows.toLocaleString("en-IN")+" tickets processed…";
   $("drop").classList.add("hidden");
   $("app").classList.remove("hidden");
   $("exp").classList.remove("hidden");
   $("mapping").classList.remove("hidden");
+
+  for(let start=0;start<totalRows;start+=chunkSize){
+    if(generation!==buildGeneration) return;
+    const end=Math.min(totalRows,start+chunkSize);
+    for(let i=start;i<end;i++){
+      const record=rawRows[i];
+      const resolvedDate=resolveTicketDate(record,currentMapping.dateCandidates,currentMapping.date,currentMapping.dateOrder||"auto");
+      const dateValue=resolvedDate.date;
+      const priority=currentMapping.priority?parsePriority(record[currentMapping.priority]):"";
+      const description=currentMapping.text?String(record[currentMapping.text]??"").trim():"";
+      const assigned=currentMapping.assigned?String(record[currentMapping.assigned]??"").trim():"";
+      const module=classifyModule(record,currentMapping);
+      const classificationText=Object.entries(record).map(([key,value])=>key+": "+String(value??"")).join(" ");
+      const issueTypes=ISSUES.filter(issue=>issue[1].test(classificationText)).map(issue=>issue[0]);
+      const dow=dateValue?(dateValue.getDay()+6)%7:null;
+      const number=currentMapping.number?String(record[currentMapping.number]??"").trim():"";
+      builtRows.push({
+        num:number,date:dateValue,dateSource:resolvedDate.source,pri:priority,mod:module,
+        iss:issueTypes,dow,wk:dow===null?null:(dow>=5?"Weekend":"Weekday"),
+        short:description,assigned
+      });
+    }
+    $("status").textContent="Preparing report: "+end.toLocaleString("en-IN")+" of "+totalRows.toLocaleString("en-IN")+" tickets processed…";
+    await new Promise(resolve=>setTimeout(resolve,0));
+  }
+  if(generation!==buildGeneration) return;
+
+  builtRows.sort((a,b)=>(b.date?b.date.getTime():0)-(a.date?a.date.getTime():0));
+  rows=builtRows;
+  dashboardStats=calculateDashboardStats(rows);
+  filter=null;
+  tablePage=0;
+  const missingDates=rows.length-dashboardStats.datedCount;
+  $("status").textContent=rows.length.toLocaleString("en-IN")+" tickets loaded"+
+    (importCleanup.removed?" ("+importCleanup.removed.toLocaleString("en-IN")+" blank, orphan, repeated-header or export-summary rows ignored"+(importCleanup.pivotMode?"; pivot summary rows excluded":"")+")":"")+
+    (currentMapping.date
+      ?(missingDates?"; "+missingDates.toLocaleString("en-IN")+" rows have missing or unreadable dates.":".")
+      :"; no date column mapped, so date-based metrics are unavailable.")+
+    (currentMapping.priority?"":" Priority was not provided; counts remain zero.");
   render();
 }
 function fail(msg){ $("status").textContent = msg; alert(msg); }
@@ -803,124 +812,146 @@ function match(t){ if(!filter) return true;
     filter.t==="undated"?!t.date :
     filter.t==="wk"?t.wk===filter.v:false; }
 function isSel(t,v){ return filter && filter.t===t && filter.v===v; }
-function bars(el, t, pairs, peak){
-  const max = Math.max(1, ...pairs.map(p=>p[1]));
-  el.innerHTML = pairs.map(([n,v])=>`<button class="row ${isSel(t,n)?"sel":""} ${peak&&v===max&&v>0?"peak":""}" data-t="${t}" data-v="${n}"><span class="n">${n}</span><span class="b"><i style="width:${v/max*100}%"></i></span><span class="c">${v}</span></button>`).join("");
+function bars(el,t,pairs,peak){
+  const max=Math.max(1,...pairs.map(pair=>pair[1]));
+  el.innerHTML=pairs.map(([name,value])=>{
+    const selected=isSel(t,name);
+    const width=(value/max*100)+"%";
+    return "<button type='button' class='row "+(selected?"sel ":"")+(peak&&value===max&&value>0?"peak":"")+
+      "' data-t='"+t+"' data-v='"+String(name).replace(/'/g,"&#39;")+
+      "' aria-pressed='"+selected+"' title='Show "+value+" matching tickets for "+String(name).replace(/'/g,"&#39;")+"'>"+
+      "<span class='n'>"+name+"</span><span class='b'><i style='width:"+width+"'></i></span><span class='c'>"+value+"</span></button>";
+  }).join("");
 }
-function render(){
-  const all = rows;
-  const total = all.length;
-  const dated = all.filter(ticket=>ticket.date instanceof Date && Number.isFinite(ticket.date.getTime()));
-  let span = 0;
-  let average = "N/A";
-  let peakDay = "N/A";
 
+function calculateDashboardStats(all){
+  const total=all.length;
+  const dated=all.filter(ticket=>ticket.date instanceof Date && Number.isFinite(ticket.date.getTime()));
+  let span=0,average="N/A",peakDay="N/A";
+  const dayCounts=Object.create(null);
   if(dated.length){
-    // Normalize every value to a calendar day before calculating the inclusive range.
-    const dayNumbers=dated.map(ticket=>
-      Date.UTC(ticket.date.getFullYear(),ticket.date.getMonth(),ticket.date.getDate())/86400000
-    );
-    span=Math.max(1,Math.max(...dayNumbers)-Math.min(...dayNumbers)+1);
+    let minDay=Infinity,maxDay=-Infinity;
+    for(const ticket of dated){
+      const dayNumber=Date.UTC(ticket.date.getFullYear(),ticket.date.getMonth(),ticket.date.getDate())/86400000;
+      if(dayNumber<minDay) minDay=dayNumber;
+      if(dayNumber>maxDay) maxDay=dayNumber;
+      const name=DAYS[ticket.dow];
+      dayCounts[name]=(dayCounts[name]||0)+1;
+    }
+    span=Math.max(1,maxDay-minDay+1);
     average=(dated.length/span).toFixed(2);
-    const countsByDay=count(dated,ticket=>DAYS[ticket.dow]);
-    peakDay=DAYS.reduce((best,day)=>
-      (countsByDay[day]||0)>(countsByDay[best]||0)?day:best,DAYS[0]
-    );
+    peakDay=DAYS.reduce((best,day)=>(dayCounts[day]||0)>(dayCounts[best]||0)?day:best,DAYS[0]);
   }
-
-  // KPI cards always render. Date-specific values explain when a usable date is unavailable.
-  $("kpi").innerHTML=
-    "<div><b>"+total+"</b><span>Total tickets</span></div>"+
-    "<div><b>"+average+"</b><span>"+(dated.length
-      ?"Average dated tickets per calendar day across "+span+" days"
-      :"Map a date column to calculate daily average")+"</span></div>"+
-    "<div><b>"+peakDay+"</b><span>"+(dated.length?"Busiest day":"Date data unavailable")+"</span></div>";
-
-  // Render only categories that occur in the uploaded client file.
   const moduleCounts=count(all,ticket=>ticket.mod);
   const issueCounts=count(all,ticket=>ticket.iss);
-  const knownModuleNames=MODULES.map(module=>module[0]);
-  const modulePairs=Object.keys(moduleCounts)
-    .filter(name=>moduleCounts[name]>0)
+  const knownNames=MODULES.map(module=>module[0]);
+  const modulePairs=Object.keys(moduleCounts).filter(name=>moduleCounts[name]>0)
     .sort((a,b)=>{
-      const ai=knownModuleNames.indexOf(a), bi=knownModuleNames.indexOf(b);
-      if(ai>=0 && bi>=0) return ai-bi;
+      const ai=knownNames.indexOf(a),bi=knownNames.indexOf(b);
+      if(ai>=0&&bi>=0) return ai-bi;
       if(ai>=0) return -1;
       if(bi>=0) return 1;
       return a.localeCompare(b);
-    })
-    .map(name=>[name,moduleCounts[name]]);
+    }).map(name=>[name,moduleCounts[name]]);
   const issuePairs=ISSUES.map(issue=>[issue[0],issueCounts[issue[0]]||0]);
-  $("mods").innerHTML="<div id='m1'></div><div id='m2'></div>";
-  bars($("m1"),"mod",modulePairs,false);
-  bars($("m2"),"iss",issuePairs,false);
-
-  // The priority panel is intentionally fixed to P1-P4. Missing/unknown values do not add tiles.
   const priorityCounts={P1:0,P2:0,P3:0,P4:0};
-  all.forEach(ticket=>{
+  let weekdayTotal=0,weekendTotal=0;
+  for(const ticket of all){
     if(Object.prototype.hasOwnProperty.call(priorityCounts,ticket.pri)) priorityCounts[ticket.pri]++;
-  });
-  const priorityLabels={P1:"Critical",P2:"High",P3:"Moderate",P4:"Low"};
-  $("pri").innerHTML=["P1","P2","P3","P4"].map(priority=>{
-    const cls=priority.toLowerCase();
-    return "<button class='"+cls+(isSel("pri",priority)?" sel":"")+
-      "' data-t='pri' data-v='"+priority+"'><b>"+priorityCounts[priority]+
-      "</b><span>"+priority+" "+priorityLabels[priority]+"</span></button>";
-  }).join("");
-
-  // Partition every accepted ticket into exactly one date bucket.
-  const weekdayTotal=dated.filter(ticket=>ticket.dow!==null && ticket.dow>=0 && ticket.dow<=4).length;
-  const weekendTotal=dated.filter(ticket=>ticket.dow===5 || ticket.dow===6).length;
+    if(ticket.dow!==null && ticket.dow!==undefined){
+      if(ticket.dow>=0&&ticket.dow<=4) weekdayTotal++;
+      else if(ticket.dow===5||ticket.dow===6) weekendTotal++;
+    }
+  }
   const unavailableDateTotal=total-dated.length;
-  const datedTotal=weekdayTotal+weekendTotal;
+  return {
+    total,datedCount:dated.length,span,average,peakDay,modulePairs,issuePairs,
+    priorityCounts,weekdayTotal,weekendTotal,unavailableDateTotal,
+    dayPairs:DAYS.map(day=>[day,dayCounts[day]||0])
+  };
+}
+function render(){
+  const all=rows;
+  const stats=dashboardStats || calculateDashboardStats(all);
+  $("kpi").innerHTML=
+    "<div><b>"+stats.total+"</b><span>Total tickets</span></div>"+
+    "<div><b>"+stats.average+"</b><span>"+(stats.datedCount?"Average dated tickets per calendar day across "+stats.span+" days":"Map a date column to calculate daily average")+"</span></div>"+
+    "<div><b>"+stats.peakDay+"</b><span>"+(stats.datedCount?"Busiest day":"Date data unavailable")+"</span></div>";
+  $("mods").innerHTML="<div id='m1'></div><div id='m2'></div>";
+  bars($("m1"),"mod",stats.modulePairs,false);
+  bars($("m2"),"iss",stats.issuePairs,false);
 
-  // Invariant: weekday + weekend + date unavailable must equal total accepted tickets.
-  // The unavailable bucket is explicit; do not invent dates for rows with no valid creation date.
+  const priorityLabels={P1:"Critical",P2:"High",P3:"Moderate",P4:"Low"};
+  $("pri").innerHTML=["P1","P2","P3","P4"].map(priority=>
+    "<button type='button' class='"+priority.toLowerCase()+(isSel("pri",priority)?" sel":"")+
+    "' data-t='pri' data-v='"+priority+"' aria-pressed='"+isSel("pri",priority)+
+    "'><b>"+stats.priorityCounts[priority]+"</b><span>"+priority+" "+priorityLabels[priority]+"</span></button>"
+  ).join("");
+
   $("split").innerHTML=
-    "<button class='"+(isSel("wk","Weekday")?"sel":"")+"' data-t='wk' data-v='Weekday'><b>"+weekdayTotal+"</b><span>Mon to Fri</span></button>"+
-    "<button class='"+(isSel("wk","Weekend")?"sel":"")+"' data-t='wk' data-v='Weekend'><b>"+weekendTotal+"</b><span>Sat and Sun</span></button>"+
-    "<button class='"+(isSel("undated","")?"sel":"")+"' data-t='undated' data-v=''><b>"+unavailableDateTotal+"</b><span>Date unavailable</span></button>";
+    "<button type='button' class='"+(isSel("wk","Weekday")?"sel":"")+"' data-t='wk' data-v='Weekday'><b>"+stats.weekdayTotal+"</b><span>Mon to Fri</span></button>"+
+    "<button type='button' class='"+(isSel("wk","Weekend")?"sel":"")+"' data-t='wk' data-v='Weekend'><b>"+stats.weekendTotal+"</b><span>Sat and Sun</span></button>"+
+    "<button type='button' class='"+(isSel("undated","")?"sel":"")+"' data-t='undated' data-v=''><b>"+stats.unavailableDateTotal+"</b><span>Date unavailable</span></button>";
   $("date-reconciliation-note").textContent=
-    "Date coverage: "+datedTotal.toLocaleString("en-IN")+" of "+total.toLocaleString("en-IN")+
-    " tickets dated; "+unavailableDateTotal.toLocaleString("en-IN")+
+    "Date coverage: "+(stats.weekdayTotal+stats.weekendTotal).toLocaleString("en-IN")+" of "+
+    stats.total.toLocaleString("en-IN")+" tickets dated; "+stats.unavailableDateTotal.toLocaleString("en-IN")+
     " without a usable created/opened date. Weekdays + weekends + unavailable = total tickets.";
-  const dayCounts=count(dated,ticket=>DAYS[ticket.dow]);
-  bars($("days"),"day",DAYS.map(day=>[day,dayCounts[day]||0]),true);
-  $("date-chart-note").textContent=dated.length
-    ? ""
-    : "No usable opened/created date was detected. Select the correct date column in Client column mapping to populate these metrics.";
+  bars($("days"),"day",stats.dayPairs,true);
+  $("date-chart-note").textContent=stats.datedCount?"":"No usable opened/created date was detected. Select the correct date column in Client column mapping to populate these metrics.";
 
-
-  const list=all.filter(match).sort((a,b)=>
-    (b.date?b.date.getTime():0)-(a.date?a.date.getTime():0)
-  );
-  $("tt").textContent=filter
-    ?"Tickets: "+filter.v+" ("+list.length+")"
-    :"All tickets ("+list.length+")";
+  const list=all.filter(match);
+  const filterLabel=!filter?"All tickets":
+    filter.t==="mod"?"Module: "+filter.v:
+    filter.t==="iss"?"Issue type: "+filter.v:
+    filter.t==="pri"?"Priority: "+filter.v:
+    filter.t==="day"?"Day: "+filter.v:
+    filter.t==="wk"?filter.v+" tickets":
+    filter.t==="undated"?"Tickets with date unavailable":"Filtered tickets";
+  $("tt").textContent=filterLabel+" ("+list.length.toLocaleString("en-IN")+")";
   $("clear").classList.toggle("hidden",!filter);
-  const esc=value=>String(value??"").replace(/[&<>"]/g,char=>({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"
-  }[char]));
-  $("tb").innerHTML=list.slice(0,200).map(ticket=>
+  const totalPages=Math.max(1,Math.ceil(list.length/TICKET_PAGE_SIZE));
+  tablePage=Math.min(Math.max(0,tablePage),totalPages-1);
+  const firstIndex=tablePage*TICKET_PAGE_SIZE;
+  const pageRows=list.slice(firstIndex,firstIndex+TICKET_PAGE_SIZE);
+  const esc=value=>String(value??"").replace(/[&<>"]/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[char]));
+  $("tb").innerHTML=pageRows.map(ticket=>
     "<tr><td>"+esc(ticket.num)+"</td>"+
     "<td>"+(ticket.date?esc(ticket.date.toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"})):"—")+"</td>"+
     "<td>"+(ticket.pri||"—")+"</td>"+
-    "<td><span class='tag'>"+esc(ticket.mod)+"</span>"+
-      ticket.iss.map(issue=>"<span class='tag'>"+esc(issue)+"</span>").join("")+"</td>"+
-    "<td>"+esc(ticket.assigned)+"</td>"+
-    "<td>"+esc(ticket.short)+"</td></tr>"
+    "<td><span class='tag'>"+esc(ticket.mod)+"</span>"+ticket.iss.map(issue=>"<span class='tag'>"+esc(issue)+"</span>").join("")+"</td>"+
+    "<td>"+esc(ticket.assigned)+"</td><td>"+esc(ticket.short)+"</td></tr>"
   ).join("");
-  $("more").textContent=list.length>200
-    ?"Showing the latest 200. Use Export filtered CSV for the full list."
+  $("page-controls").innerHTML=totalPages>1
+    ?"<button type='button' data-page='-1' "+(tablePage===0?"disabled":"")+">Previous</button>"+
+      "<span>Page "+(tablePage+1)+" of "+totalPages+" · "+list.length.toLocaleString("en-IN")+" tickets</span>"+
+      "<button type='button' data-page='1' "+(tablePage>=totalPages-1?"disabled":"")+">Next</button>"
     :"";
+  $("more").textContent=list.length>pageRows.length
+    ?"Showing "+(firstIndex+1).toLocaleString("en-IN")+"–"+(firstIndex+pageRows.length).toLocaleString("en-IN")+
+      " of "+list.length.toLocaleString("en-IN")+" matching tickets. Export filtered CSV downloads the complete result set."
+    :(filter?"Showing all "+list.length.toLocaleString("en-IN")+" matching tickets.":"Showing all "+list.length.toLocaleString("en-IN")+" tickets.");
   window.__list=list;
 }
-document.addEventListener("click", e=>{
-  const b = e.target.closest("[data-t]"); if(!b) return;
-  const same = filter && filter.t===b.dataset.t && filter.v===b.dataset.v;
-  filter = same ? null : {t:b.dataset.t, v:b.dataset.v}; render();
+
+document.addEventListener("click",e=>{
+  const pageButton=e.target.closest("[data-page]");
+  if(pageButton){
+    tablePage=Math.max(0,tablePage+Number(pageButton.dataset.page||0));
+    render();
+    return;
+  }
+  const button=e.target.closest("[data-t]");
+  if(!button) return;
+  const same=filter && filter.t===button.dataset.t && filter.v===button.dataset.v;
+  filter=same?null:{t:button.dataset.t,v:button.dataset.v};
+  tablePage=0;
+  render();
+  if(button.dataset.t==="mod" || button.dataset.t==="iss"){
+    const target=$("tickets-section");
+    if(target) target.scrollIntoView({behavior:"smooth",block:"start"});
+  }
 });
-$("clear").onclick = ()=>{ filter=null; render(); };
+$("clear").onclick = ()=>{ filter=null; tablePage=0; render(); };
 $("exp").onclick = ()=>{
   const q = s=>'"'+String(s).replace(/"/g,'""')+'"';
   const csv = ["Number,Opened,Priority,Area of work,Issue type,Day,Assigned To,Subject / Description"].concat(window.__list.map(t=>[t.num,t.date ? t.date.toISOString() : "",t.pri,t.mod,t.iss.join("; "),t.dow===null ? "" : DAYS[t.dow],t.assigned,t.short].map(q).join(","))).join("\n");
