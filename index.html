@@ -57,6 +57,12 @@ main{padding:0 clamp(16px,4vw,40px) 40px;max-width:1280px;margin:0 auto}
 .mapping-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:14px}
 .mapping-field label{display:block;color:var(--mute);font-size:.78rem;font-weight:600;margin-bottom:5px}
 .map-select{width:100%;min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);font:inherit;font-size:.85rem}
+.dynamic-filter-panel{border-top:1px solid var(--line);margin-top:16px;padding-top:14px}
+.dynamic-filter-toolbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.dynamic-filter-toolbar h3{font-size:.9rem;font-weight:600;margin:0}
+.dynamic-filter-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:12px}
+.dynamic-filter-note{color:var(--mute);font-size:.8rem;margin:8px 0 0}
+.dynamic-filter-select{width:100%;min-width:0}
 .tbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:10px}
 .wrap{overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-size:.84rem}
@@ -102,6 +108,15 @@ th{color:var(--mute);font-weight:500;white-space:nowrap}
       <div class="mapping-field"><label for="map-assigned">Assigned To / Owner</label><select id="map-assigned" class="map-select"></select></div>
     </div>
     <p class="note" id="mapping-note"></p>
+    <div id="dynamic-filter-panel" class="dynamic-filter-panel hidden">
+      <div class="dynamic-filter-toolbar">
+        <h3>Filters discovered from this file</h3>
+        <button id="clear-column-filters" type="button" class="hidden">Clear column filters</button>
+      </div>
+      <p class="dynamic-filter-note">Filters are detected from repeated, useful values in your uploaded columns. Combine filters to narrow the ticket list.</p>
+      <div id="dynamic-filters" class="dynamic-filter-grid"></div>
+      <p id="dynamic-filter-summary" class="dynamic-filter-note"></p>
+    </div>
   </section>
 
   <div id="app" class="hidden">
@@ -123,6 +138,7 @@ th{color:var(--mute);font-weight:500;white-space:nowrap}
 </main>
 
 <script src="./assets/vendor/xlsx-0.20.3.js"></script>
+<script src="./assets/filter-engine.js"></script>
 <script src="./assets/dashboard.js"></script>
 </body>
 </html>

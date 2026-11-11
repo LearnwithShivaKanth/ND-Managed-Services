@@ -76,6 +76,7 @@ const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sun
 /* ----------------------------------------------------------------------------------- */
 const $ = id => document.getElementById(id);
 let rows = [], filter = null, rawRows = [], sourceHeaders = [], currentMapping = {}, currentDateOrder = "dmy", importCleanup = {removed:0,pivotMode:false};
+let dynamicFilterColumns = [], columnFilters = Object.create(null);
 let dashboardStats = null, buildGeneration = 0, tablePage = 0;
 const TICKET_PAGE_SIZE = 100;
 
@@ -343,6 +344,61 @@ function readMapping(){
     category:$("map-category").value,
     assigned:$("map-assigned").value
   };
+}
+function hasColumnFilters(){
+  return Object.keys(columnFilters).some(name=>columnFilters[name]!=="");
+}
+function renderDynamicFilters(){
+  const panel=$("dynamic-filter-panel");
+  const host=$("dynamic-filters");
+  const summary=$("dynamic-filter-summary");
+  const clearButton=$("clear-column-filters");
+  if(!panel || !host || !summary || !clearButton) return;
+  host.replaceChildren();
+
+  if(!dynamicFilterColumns.length){
+    panel.classList.remove("hidden");
+    summary.textContent="No repeatable categorical columns were found. Date, ID and free-text columns are excluded from these dropdown filters.";
+    clearButton.classList.add("hidden");
+    return;
+  }
+
+  panel.classList.remove("hidden");
+  dynamicFilterColumns.forEach(field=>{
+    const wrapper=document.createElement("div");
+    wrapper.className="mapping-field";
+    const label=document.createElement("label");
+    label.textContent=field.name;
+    const select=document.createElement("select");
+    select.className="map-select dynamic-filter-select";
+    select.setAttribute("aria-label","Filter by "+field.name);
+
+    const allOption=document.createElement("option");
+    allOption.value="";
+    allOption.textContent="All "+field.name;
+    select.appendChild(allOption);
+
+    field.options.forEach(item=>{
+      const option=document.createElement("option");
+      option.value=item.value;
+      option.textContent=item.value+" ("+item.count.toLocaleString("en-IN")+")";
+      select.appendChild(option);
+    });
+    select.value=columnFilters[field.name]||"";
+    select.addEventListener("change",()=>{
+      if(select.value) columnFilters[field.name]=select.value;
+      else delete columnFilters[field.name];
+      tablePage=0;
+      render();
+    });
+    wrapper.append(label,select);
+    host.appendChild(wrapper);
+  });
+
+  const selectedCount=Object.keys(columnFilters).filter(name=>columnFilters[name]).length;
+  summary.textContent="Detected "+dynamicFilterColumns.length+" useful filter columns. "+
+    (selectedCount?selectedCount+" column filter(s) active.":"Combine filters from any of these columns.");
+  clearButton.classList.toggle("hidden",selectedCount===0);
 }
 function parsePriority(value){
   const s=String(value ?? "").trim().toLowerCase();
@@ -613,13 +669,15 @@ function setRawData(raw){
   if (!sourceHeaders.length) return fail("The file has no readable column headers. Please check that the first row contains column names.");
   if (sourceHeaders.length > MAX_TICKET_COLUMNS) return fail("This file exceeds the limit of "+MAX_TICKET_COLUMNS+" columns.");
 
-  filter=null; tablePage=0; dashboardStats=null;
+  filter=null; columnFilters=Object.create(null); tablePage=0; dashboardStats=null;
   const cleaned=cleanTicketRows(raw);
   importCleanup=cleaned;
   rawRows=cleaned.rows;
   if(!rawRows.length) return fail("No valid ticket rows were found. Blank rows, repeated headers and export summary rows were ignored.");
 
   currentMapping = detectMapping(sourceHeaders,rawRows);
+  dynamicFilterColumns = TicketFilterEngine.detectFilterColumns(sourceHeaders,rawRows);
+  renderDynamicFilters();
   populateMappingSelect("map-date",sourceHeaders,currentMapping.date);
   $("map-date-format").value = "auto";
   populateMappingSelect("map-priority",sourceHeaders,currentMapping.priority);
@@ -678,10 +736,15 @@ async function build(raw,mapping){
       const issueTypes=ISSUES.filter(issue=>issue[1].test(classificationText)).map(issue=>issue[0]);
       const dow=dateValue?(dateValue.getDay()+6)%7:null;
       const number=currentMapping.number?String(record[currentMapping.number]??"").trim():"";
+      const facetValues=Object.create(null);
+      for(const facet of dynamicFilterColumns){
+        const value=record[facet.name];
+        facetValues[facet.name]=value===null||value===undefined?"":String(value).trim();
+      }
       builtRows.push({
         num:number,date:dateValue,dateSource:resolvedDate.source,pri:priority,mod:module,
         iss:issueTypes,dow,wk:dow===null?null:(dow>=5?"Weekend":"Weekday"),
-        short:description,assigned
+        short:description,assigned,facetValues
       });
     }
     $("status").textContent="Preparing report: "+end.toLocaleString("en-IN")+" of "+totalRows.toLocaleString("en-IN")+" tickets processed…";
@@ -706,13 +769,18 @@ async function build(raw,mapping){
 function fail(msg){ $("status").textContent = msg; alert(msg); }
 
 function count(items, keyFn){ const m={}; items.forEach(t=>[].concat(keyFn(t)).forEach(k=>m[k]=(m[k]||0)+1)); return m; }
-function match(t){ if(!filter) return true;
-  return filter.t==="mod"?t.mod===filter.v :
-    filter.t==="iss"?t.iss.includes(filter.v) :
-    filter.t==="pri"?t.pri===filter.v :
-    filter.t==="day"?t.dow!==null && DAYS[t.dow]===filter.v :
-    filter.t==="undated"?!t.date :
-    filter.t==="wk"?t.wk===filter.v:false; }
+function match(t){
+  let chartMatch=true;
+  if(filter){
+    chartMatch=filter.t==="mod"?t.mod===filter.v :
+      filter.t==="iss"?t.iss.includes(filter.v) :
+      filter.t==="pri"?t.pri===filter.v :
+      filter.t==="day"?t.dow!==null && DAYS[t.dow]===filter.v :
+      filter.t==="undated"?!t.date :
+      filter.t==="wk"?t.wk===filter.v:false;
+  }
+  return chartMatch && TicketFilterEngine.matchesFacetValues(t.facetValues,columnFilters);
+}
 function isSel(t,v){ return filter && filter.t===t && filter.v===v; }
 function bars(el,t,pairs,peak){
   const max=Math.max(1,...pairs.map(pair=>pair[1]));
@@ -802,15 +870,21 @@ function render(){
   $("date-chart-note").textContent=stats.datedCount?"":"No usable opened/created date was detected. Select the correct date column in Client column mapping to populate these metrics.";
 
   const list=all.filter(match);
-  const filterLabel=!filter?"All tickets":
-    filter.t==="mod"?"Module: "+filter.v:
-    filter.t==="iss"?"Issue type: "+filter.v:
-    filter.t==="pri"?"Priority: "+filter.v:
-    filter.t==="day"?"Day: "+filter.v:
-    filter.t==="wk"?filter.v+" tickets":
-    filter.t==="undated"?"Tickets with date unavailable":"Filtered tickets";
+  const activeLabels=[];
+  if(filter){
+    activeLabels.push(filter.t==="mod"?"Module: "+filter.v:
+      filter.t==="iss"?"Issue type: "+filter.v:
+      filter.t==="pri"?"Priority: "+filter.v:
+      filter.t==="day"?"Day: "+filter.v:
+      filter.t==="wk"?filter.v+" tickets":
+      filter.t==="undated"?"Tickets with date unavailable":"Chart filter");
+  }
+  Object.keys(columnFilters).forEach(name=>{
+    if(columnFilters[name]) activeLabels.push(name+": "+columnFilters[name]);
+  });
+  const filterLabel=activeLabels.length?activeLabels.join(" · "):"All tickets";
   $("tt").textContent=filterLabel+" ("+list.length.toLocaleString("en-IN")+")";
-  $("clear").classList.toggle("hidden",!filter);
+  $("clear").classList.toggle("hidden",!filter&&!hasColumnFilters());
   const totalPages=Math.max(1,Math.ceil(list.length/TICKET_PAGE_SIZE));
   tablePage=Math.min(Math.max(0,tablePage),totalPages-1);
   const firstIndex=tablePage*TICKET_PAGE_SIZE;
@@ -853,7 +927,19 @@ document.addEventListener("click",e=>{
     if(target) target.scrollIntoView({behavior:"smooth",block:"start"});
   }
 });
-$("clear").onclick = ()=>{ filter=null; tablePage=0; render(); };
+$("clear").onclick = ()=>{
+  filter=null;
+  columnFilters=Object.create(null);
+  tablePage=0;
+  renderDynamicFilters();
+  render();
+};
+$("clear-column-filters").onclick = ()=>{
+  columnFilters=Object.create(null);
+  tablePage=0;
+  renderDynamicFilters();
+  render();
+};
 $("exp").onclick = ()=>{
   const q = s=>'"'+String(s).replace(/"/g,'""')+'"';
   const csv = ["Number,Opened,Priority,Area of work,Issue type,Day,Assigned To,Subject / Description"].concat(window.__list.map(t=>[t.num,t.date ? t.date.toISOString() : "",t.pri,t.mod,t.iss.join("; "),t.dow===null ? "" : DAYS[t.dow],t.assigned,t.short].map(q).join(","))).join("\n");
