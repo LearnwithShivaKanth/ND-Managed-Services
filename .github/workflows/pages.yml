@@ -30,6 +30,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Run dashboard security smoke tests
+        run: |
+          node --check assets/vendor/xlsx-0.20.3.js
+          node --check assets/dashboard.js
+          node scripts/security-smoke-test.cjs
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
         with:

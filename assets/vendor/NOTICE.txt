@@ -1,0 +1,9 @@
+SheetJS Community Edition 0.20.3
+Copyright (C) 2012-present SheetJS
+Vendored file: xlsx-0.20.3.js (UMD browser distribution)
+Official package tarball: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
+Package integrity recorded in the upstream package lock:
+sha512-oLDq3jw7AcLqKWH2AhCpVTZl8mf6X2YReP+Neh0SJUzV/BdZYjth94tG5toiMB1PPrYtxOCfaoUCkvtuH+3AJA==
+Source package metadata identifies this as package "xlsx", version 0.20.3, authored by SheetJS.
+License: Apache License 2.0. See LICENSE.sheetjs.txt.
+This local copy avoids loading the spreadsheet parser from a third-party CDN at runtime.
